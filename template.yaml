@@ -22,8 +22,8 @@ Resources:
   IngestFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/ingest/
-      Handler: handler.main
+      CodeUri: .
+      Handler: src/ingest/handler.main
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref MessagesTable
@@ -42,8 +42,8 @@ Resources:
   SearchFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/search/
-      Handler: handler.main
+      CodeUri: .
+      Handler: src/search/handler.main
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref MessagesTable
