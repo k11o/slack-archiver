@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Lightweight Slack message archiver and search API.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 10
+    MemorySize: 128
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        MESSAGES_TABLE: !Ref MessagesTable
+        SEARCH_INDEX_TABLE: !Ref SearchIndexTable
+        SLACK_SIGNING_SECRET_PARAM: /slack-archiver/slack-signing-secret
+
+Resources:
+  Api:
+    Type: AWS::Serverless::HttpApi
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/ingest/
+      Handler: handler.main
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SearchIndexTable
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/slack-signing-secret
+      Events:
+        SlackEvents:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /slack/events
+            Method: POST
+
+  SearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/search/
+      Handler: handler.main
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SearchIndexTable
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/slack-signing-secret
+      Events:
+        SlackCommand:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /slack/search
+            Method: POST
+
+  MessagesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  SearchIndexTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com'
