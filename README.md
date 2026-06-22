@@ -51,7 +51,10 @@ Lambda search API
 docs/
   architecture.md
   auth.md
+  codex-runbook.md
   data-model.md
+  deployment.md
+  slack-app.md
 src/
   common/
   ingest/
@@ -59,6 +62,47 @@ src/
 template.yaml
 ```
 
+## Read these first
+
+For implementation and deployment work, read in this order:
+
+1. `docs/codex-runbook.md`
+2. `docs/deployment.md`
+3. `docs/slack-app.md`
+4. `docs/auth.md`
+5. `docs/architecture.md`
+6. `docs/data-model.md`
+7. `template.yaml`
+
+## Required external inputs
+
+These values are not stored in the repository and must be provided by the operator or execution environment:
+
+- Target AWS account and region.
+- Slack Signing Secret.
+- Slack app name and target workspace.
+- Whether private channels should be archived.
+- Whether the first release should stay Slack-only or include a web UI.
+
+Secrets must not be committed to Git.
+
 ## Deployment direction
 
-The first deploy target is AWS SAM. The template is intentionally minimal and should be extended after Slack app details and domain/auth decisions are fixed.
+The first deploy target is AWS SAM.
+
+High-level flow:
+
+```bash
+npm install
+sam validate
+sam build
+sam deploy --guided
+```
+
+Before deployment, store the Slack Signing Secret in SSM Parameter Store as `/slack-archiver/slack-signing-secret`.
+
+## Authentication direction
+
+Slack-facing endpoints use Slack request signature verification.
+
+The web app should not be implemented in the first pass unless explicitly requested. When added, use Cognito User Pool Hosted UI plus API Gateway HTTP API JWT authorizer. Do not implement custom password storage.
