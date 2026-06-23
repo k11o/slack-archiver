@@ -7,6 +7,7 @@ const {
   formatSlackMessageText,
   loadMessageContext,
   loadUserNames,
+  searchMessages,
 } = require('../src/search/handler');
 const { signedSlackEvent } = require('./helpers');
 
@@ -123,6 +124,40 @@ test('search worker reports misses through response_url', async () => {
     response_type: 'ephemeral',
     text: '見つかりませんでした: missing',
   });
+});
+
+test('search skips bot messages and continues to human results', async () => {
+  process.env.SEARCH_INDEX_TABLE = 'index-table';
+  process.env.MESSAGES_TABLE = 'messages-table';
+
+  const botHit = message({ ts: '1710000005.000000', text: 'needle from bot' });
+  botHit.subtype = 'bot_message';
+  botHit.bot_id = 'B123';
+  const humanHit = message({ ts: '1710000006.000000', text: 'needle from human' });
+  const messages = new Map([
+    [botHit.sk, botHit],
+    [humanHit.sk, humanHit],
+  ]);
+
+  const results = await searchMessages({
+    query: 'needle',
+    ddbSend: async (command) => {
+      if (command.constructor.name === 'QueryCommand') {
+        return {
+          Items: [
+            { message_pk: botHit.pk, message_sk: botHit.sk },
+            { message_pk: humanHit.pk, message_sk: humanHit.sk },
+          ],
+        };
+      }
+      if (command.constructor.name === 'GetCommand') {
+        return { Item: messages.get(command.input.Key.sk) };
+      }
+      throw new Error(`unexpected command: ${command.constructor.name}`);
+    },
+  });
+
+  assert.deepEqual(results.map((item) => item.text), ['needle from human']);
 });
 
 test('loadMessageContext returns five previous messages, hit, and five following messages in order', async () => {

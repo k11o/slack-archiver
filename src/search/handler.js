@@ -198,10 +198,23 @@ async function searchMessages({ query, ddbSend }) {
       TableName: process.env.MESSAGES_TABLE,
       Key: { pk: candidate.pk, sk: candidate.sk },
     }));
-    if (result.Item && result.Item.normalized_text.includes(query)) messages.push(result.Item);
+    if (result.Item && isSearchableMessage(result.Item, query)) messages.push(result.Item);
     if (messages.length >= MAX_HITS) break;
   }
   return messages;
+}
+
+function isSearchableMessage(message, query) {
+  if (!message.normalized_text?.includes(query)) return false;
+  if (message.deleted) return false;
+  return !isBotMessage(message);
+}
+
+function isBotMessage(message) {
+  return message.subtype === 'bot_message'
+    || Boolean(message.bot_id)
+    || Boolean(message.bot_profile)
+    || Boolean(message.app_id);
 }
 
 async function loadMessageContext({ message, ddbSend }) {
