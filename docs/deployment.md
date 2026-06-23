@@ -13,7 +13,7 @@ These values are intentionally not committed to the repository.
 | Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString |
 | Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token | SSM Parameter Store SecureString |
 | Slack OIDC client ID | Slack app settings: Sign in with Slack / OAuth | SAM parameter `SlackOidcClientId` |
-| Slack OIDC client secret | Slack app settings: Sign in with Slack / OAuth | SSM Parameter Store SecureString |
+| Slack OIDC client secret | Slack app settings: Sign in with Slack / OAuth | SSM Parameter Store SecureString, then SAM parameter `SlackOidcClientSecret` at deploy time |
 | Slack workspace team ID | Slack workspace/app metadata | SAM parameter `AllowedSlackTeamId` |
 | Cognito domain prefix | Deployment decision | SAM parameter `CognitoDomainPrefix` |
 | Web base URL | Existing API endpoint | SAM parameter `WebBaseUrl` |
@@ -119,9 +119,45 @@ uv run sam build
 uv run sam deploy --guided --profile <AWS_PROFILE> --region ap-northeast-1
 ```
 
-For non-guided deployment after the web UI is configured:
+For non-guided deployment after the web UI is configured, read the Slack OIDC values from SSM and pass them as SAM parameters. `SlackOidcClientSecret` is a `NoEcho` CloudFormation parameter because `AWS::Cognito::UserPoolIdentityProvider.ProviderDetails.client_secret` does not support SSM SecureString dynamic references.
 
 ```bash
+SLACK_OIDC_CLIENT_ID=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/slack-oidc-client-id \
+  --query 'Parameter.Value' \
+  --output text)
+
+SLACK_OIDC_CLIENT_SECRET=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --with-decryption \
+  --name /slack-archiver/slack-oidc-client-secret \
+  --query 'Parameter.Value' \
+  --output text)
+
+ALLOWED_SLACK_TEAM_ID=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/allowed-slack-team-id \
+  --query 'Parameter.Value' \
+  --output text)
+
+COGNITO_DOMAIN_PREFIX=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/cognito-domain-prefix \
+  --query 'Parameter.Value' \
+  --output text)
+
+WEB_BASE_URL=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/web-base-url \
+  --query 'Parameter.Value' \
+  --output text)
+
 uv run sam deploy \
   --stack-name slack-archiver \
   --profile <AWS_PROFILE> \
@@ -129,11 +165,11 @@ uv run sam deploy \
   --resolve-s3 \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    SlackOidcClientId='<SLACK_OIDC_CLIENT_ID>' \
-    SlackOidcClientSecretParam='/slack-archiver/slack-oidc-client-secret' \
-    AllowedSlackTeamId='<SLACK_TEAM_ID>' \
-    CognitoDomainPrefix='<UNIQUE_COGNITO_DOMAIN_PREFIX>' \
-    WebBaseUrl='https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com'
+    SlackOidcClientId="$SLACK_OIDC_CLIENT_ID" \
+    SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
+    AllowedSlackTeamId="$ALLOWED_SLACK_TEAM_ID" \
+    CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
+    WebBaseUrl="$WEB_BASE_URL"
 ```
 
 Recommended guided values:

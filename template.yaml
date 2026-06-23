@@ -7,10 +7,10 @@ Parameters:
     Type: String
     Description: Slack Sign in with Slack OIDC client ID for the web UI.
     NoEcho: true
-  SlackOidcClientSecretParam:
+  SlackOidcClientSecret:
     Type: String
-    Default: /slack-archiver/slack-oidc-client-secret
-    Description: SSM SecureString parameter containing the Slack OIDC client secret.
+    Description: Slack Sign in with Slack OIDC client secret for the web UI.
+    NoEcho: true
   AllowedSlackTeamId:
     Type: String
     Description: Slack workspace team ID allowed to access the web UI.
@@ -179,7 +179,7 @@ Resources:
       ProviderType: OIDC
       ProviderDetails:
         client_id: !Ref SlackOidcClientId
-        client_secret: !Sub '{{resolve:ssm-secure:${SlackOidcClientSecretParam}}}'
+        client_secret: !Ref SlackOidcClientSecret
         attributes_request_method: GET
         authorize_scopes: openid profile email
         oidc_issuer: https://slack.com

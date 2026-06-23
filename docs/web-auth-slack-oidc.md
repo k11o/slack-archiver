@@ -83,7 +83,7 @@ Implement Slack workspace login through Cognito Hosted UI.
 - Add a Cognito Hosted UI domain.
 - Configure Slack as an external OIDC identity provider.
 - Configure protected web API routes to verify Cognito JWTs.
-- Store Slack OIDC client credentials outside Git, preferably in SSM Parameter Store SecureString or Secrets Manager.
+- Store Slack OIDC client credentials outside Git. Keep the client secret in SSM Parameter Store SecureString, then pass it to SAM as a `NoEcho` parameter at deploy time because Cognito OIDC provider `client_secret` does not support SSM SecureString dynamic references.
 - Add environment/configuration for the allowed Slack workspace team ID.
 - Pass the deployed API base URL as `WebBaseUrl` so Cognito callback/logout URLs do not create a CloudFormation dependency cycle.
 
@@ -97,7 +97,7 @@ https://<cognito-domain>/oauth2/idpresponse
 ```
 
 - Add the web app logout URL when the frontend exists.
-- Record the Slack OIDC Client ID and Client Secret in AWS secrets storage.
+- Record the Slack OIDC Client ID and Client Secret in AWS secrets storage. The deployment command reads those values and passes them as CloudFormation parameters.
 
 ### Authorization
 
