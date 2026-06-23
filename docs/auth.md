@@ -37,6 +37,8 @@ API Gateway HTTP API JWT authorizer
 Search Lambda
 ```
 
+Use Slack Sign in with Slack as the external OIDC provider for Cognito so that web users authenticate with the target Slack workspace account. See `docs/web-auth-slack-oidc.md` for the implementation task.
+
 ### Why Cognito
 
 - No EC2 or self-hosted identity service.
@@ -48,8 +50,8 @@ Search Lambda
 
 Start with an allowlist:
 
-- Disable open self-signup, or require admin-created users.
-- Restrict access by Cognito group or allowed email domain if needed.
+- Restrict access to the configured Slack workspace by validating Slack's `https://slack.com/team_id` OIDC claim.
+- Disable open Cognito-native self-signup unless it is explicitly needed later.
 - Use read-only API permissions for the initial web UI.
 
 ## Alternatives considered
@@ -58,9 +60,9 @@ Start with an allowlist:
 
 Simple, but it adds edge code and weak user management. Avoid unless the app is strictly single-user and temporary.
 
-### Slack OAuth login
+### Direct Slack OAuth/OIDC login
 
-Attractive because the data is Slack-related, but it is more work and still needs careful authorization mapping. Use later if the app becomes multi-user and should mirror Slack workspace membership.
+Attractive because the data is Slack-related, but direct implementation is more code. Prefer Cognito Hosted UI with Slack as an external OIDC provider first, then fall back to a direct Slack OIDC callback only if Cognito cannot preserve or enforce the Slack team claim reliably.
 
 ### IAM Identity Center
 

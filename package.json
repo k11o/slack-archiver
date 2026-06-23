@@ -5,7 +5,7 @@
   "description": "Lightweight Slack message archiver and search tool for small workspaces.",
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "test": "node --test"

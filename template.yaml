@@ -4,7 +4,7 @@ Description: Lightweight Slack message archiver and search API.
 
 Globals:
   Function:
-    Runtime: nodejs22.x
+    Runtime: nodejs24.x
     Timeout: 10
     MemorySize: 128
     Architectures:

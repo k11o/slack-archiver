@@ -9,9 +9,11 @@
 
 ## Local Tooling
 
-- Use Node.js 22 or newer.
+- Use Node.js 24 or newer.
+- Use Python 3.13.14 for uv-managed SAM CLI tooling. Python 3.14 is newer, but the current SAM CLI dependency set does not build reliably with it in this project.
 - Run JavaScript tests with `npm test`.
 - Manage SAM CLI through uv, using `pyproject.toml` and `uv.lock`.
+- GitHub Actions CI should run the same test and SAM validation/build commands.
 - Use these validation commands before deployment:
 
 ```bash
@@ -60,6 +62,12 @@ uv run sam deploy \
   - `commands`
   - `chat:write`
   - `users:read`
+
+## Web Authentication
+
+- Future web UI auth should use Slack Sign in with Slack through Cognito Hosted UI first.
+- Validate Slack's OIDC `https://slack.com/team_id` claim against the allowed workspace before granting application access.
+- See `docs/web-auth-slack-oidc.md` before starting web auth implementation.
 
 ## Data Model
 

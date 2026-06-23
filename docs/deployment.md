@@ -22,8 +22,11 @@ Install and configure:
 
 - AWS CLI authenticated to the target account.
 - uv. SAM CLI is managed through `pyproject.toml`.
-- Node.js 22 or newer.
+- Node.js 24 or newer.
+- Python 3.13.14 for uv-managed SAM CLI tooling.
 - npm.
+
+Node.js 24 is the latest AWS Lambda managed Node.js runtime currently used by this project. Python 3.13.14 is used for SAM CLI tooling because the current SAM CLI dependency set does not build reliably with Python 3.14.
 
 Verify identity before deploying:
 

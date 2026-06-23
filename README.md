@@ -51,6 +51,7 @@ Lambda search API
 docs/
   architecture.md
   auth.md
+  web-auth-slack-oidc.md
   codex-runbook.md
   data-model.md
   deployment.md
@@ -70,9 +71,10 @@ For implementation and deployment work, read in this order:
 2. `docs/deployment.md`
 3. `docs/slack-app.md`
 4. `docs/auth.md`
-5. `docs/architecture.md`
-6. `docs/data-model.md`
-7. `template.yaml`
+5. `docs/web-auth-slack-oidc.md`
+6. `docs/architecture.md`
+7. `docs/data-model.md`
+8. `template.yaml`
 
 ## Required external inputs
 
