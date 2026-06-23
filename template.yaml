@@ -14,6 +14,7 @@ Globals:
         MESSAGES_TABLE: !Ref MessagesTable
         SEARCH_INDEX_TABLE: !Ref SearchIndexTable
         SLACK_SIGNING_SECRET_PARAM: /slack-archiver/slack-signing-secret
+        SLACK_BOT_TOKEN_PARAM: /slack-archiver/slack-bot-token
 
 Resources:
   Api:
@@ -44,13 +45,14 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/search/handler.main
+      Environment:
+        Variables:
+          SEARCH_WORKER_FUNCTION_NAME: !Ref SearchWorkerFunction
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref MessagesTable
-        - DynamoDBReadPolicy:
-            TableName: !Ref SearchIndexTable
         - SSMParameterReadPolicy:
             ParameterName: slack-archiver/slack-signing-secret
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SearchWorkerFunction
       Events:
         SlackCommand:
           Type: HttpApi
@@ -58,6 +60,20 @@ Resources:
             ApiId: !Ref Api
             Path: /slack/search
             Method: POST
+
+  SearchWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/search/handler.worker
+      Timeout: 30
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SearchIndexTable
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/slack-bot-token
 
   MessagesTable:
     Type: AWS::DynamoDB::Table

@@ -42,10 +42,11 @@ Ask the operator for these values if they are not already available in the execu
 
 - Target AWS account and region.
 - Slack Signing Secret.
+- Slack Bot User OAuth Token.
 - Slack app name.
 - Slack workspace where the app should be installed.
-- Whether private channels should be archived.
-- Whether the first release should include only Slack slash command search or also a web UI.
+- Whether private channels should be archived. Current first release decision: no.
+- Whether the first release should include only Slack slash command search or also a web UI. Current first release decision: Slack slash command only.
 
 Do not guess secrets or workspace-specific identifiers.
 
@@ -58,8 +59,8 @@ Run:
 ```bash
 npm install
 npm test
-sam validate
-sam build
+uv run sam validate
+uv run sam build
 ```
 
 If tests do not exist, add minimal tests for:
@@ -94,21 +95,31 @@ Implement or verify:
 
 Follow `docs/deployment.md`.
 
-Before deployment, store the Slack Signing Secret in SSM Parameter Store:
+Before deployment, store the Slack secrets in SSM Parameter Store:
 
 ```bash
 aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
   --name /slack-archiver/slack-signing-secret \
   --type SecureString \
   --value '<SLACK_SIGNING_SECRET>' \
+  --overwrite
+
+aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/slack-bot-token \
+  --type SecureString \
+  --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
   --overwrite
 ```
 
 Then deploy:
 
 ```bash
-sam build
-sam deploy --guided
+uv run sam build
+uv run sam deploy --guided --profile <AWS_PROFILE> --region ap-northeast-1
 ```
 
 Record the `ApiEndpoint` output.
@@ -130,7 +141,7 @@ Run this acceptance test:
 
 1. Invite the Slack app to a test channel.
 2. Post a message containing a unique token, e.g. `slack-archiver-smoke-test-20260622`.
-3. Run `/archive slack-archiver-smoke-test-20260622`.
+3. Run `/hi-nick slack-archiver-smoke-test-20260622`.
 4. Confirm the result contains the message.
 5. Inspect DynamoDB to confirm the message and index records exist.
 

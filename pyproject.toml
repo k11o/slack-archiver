@@ -1,0 +1,11 @@
+[project]
+name = "slack-archiver-tools"
+version = "0.1.0"
+description = "Local Python tooling for slack-archiver development and deployment."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "aws-sam-cli==1.162.1",
+]
+
+[tool.uv]
+package = false

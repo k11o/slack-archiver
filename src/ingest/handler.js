@@ -19,76 +19,84 @@ async function getSigningSecret() {
   return cachedSigningSecret;
 }
 
-exports.main = async (event) => {
-  const { rawBody, body } = parseBody(event);
-  const signingSecret = await getSigningSecret();
-  const ok = verifySlackSignature({
-    signingSecret,
-    timestamp: event.headers?.['x-slack-request-timestamp'] || event.headers?.['X-Slack-Request-Timestamp'],
-    signature: event.headers?.['x-slack-signature'] || event.headers?.['X-Slack-Signature'],
-    rawBody,
-  });
+function createHandler({ getSigningSecret: loadSigningSecret, ddbSend }) {
+  return async (event) => {
+    const { rawBody, body } = parseBody(event);
+    const signingSecret = await loadSigningSecret();
+    const ok = verifySlackSignature({
+      signingSecret,
+      timestamp: event.headers?.['x-slack-request-timestamp'] || event.headers?.['X-Slack-Request-Timestamp'],
+      signature: event.headers?.['x-slack-signature'] || event.headers?.['X-Slack-Signature'],
+      rawBody,
+    });
 
-  if (!ok) return { statusCode: 401, body: 'invalid signature' };
+    if (!ok) return { statusCode: 401, body: 'invalid signature' };
 
-  if (body.type === 'url_verification') {
-    return { statusCode: 200, headers: { 'content-type': 'text/plain' }, body: body.challenge };
-  }
+    if (body.type === 'url_verification') {
+      return { statusCode: 200, headers: { 'content-type': 'text/plain' }, body: body.challenge };
+    }
 
-  const slackEvent = body.event;
-  if (!slackEvent || slackEvent.type !== 'message' || slackEvent.subtype === 'bot_message') {
-    return { statusCode: 200, body: 'ignored' };
-  }
+    const slackEvent = body.event;
+    if (!slackEvent || slackEvent.type !== 'message' || slackEvent.subtype) {
+      return { statusCode: 200, body: 'ignored' };
+    }
 
-  const teamId = body.team_id || slackEvent.team;
-  const channelId = slackEvent.channel;
-  const ts = slackEvent.ts;
-  const text = slackEvent.text || '';
-  const pk = `workspace#${teamId}#channel#${channelId}`;
-  const sk = `ts#${ts}`;
-  const normalized = normalizeText(text);
-  const now = new Date().toISOString();
+    const teamId = body.team_id || slackEvent.team;
+    const channelId = slackEvent.channel;
+    const ts = slackEvent.ts;
+    const text = slackEvent.text || '';
+    const pk = `workspace#${teamId}#channel#${channelId}`;
+    const sk = `ts#${ts}`;
+    const normalized = normalizeText(text);
+    const now = new Date().toISOString();
 
-  await ddb.send(new PutCommand({
-    TableName: process.env.MESSAGES_TABLE,
-    Item: {
-      pk,
-      sk,
-      message_id: `${teamId}:${channelId}:${ts}`,
-      team_id: teamId,
-      channel_id: channelId,
-      user_id: slackEvent.user,
-      ts,
-      thread_ts: slackEvent.thread_ts || null,
-      text,
-      normalized_text: normalized,
-      event_id: body.event_id,
-      deleted: false,
-      created_at: now,
-      updated_at: now,
-    },
-  }));
-
-  const requests = tokenize(text).map((token) => ({
-    PutRequest: {
+    await ddbSend(new PutCommand({
+      TableName: process.env.MESSAGES_TABLE,
       Item: {
-        pk: `token#${token}`,
-        sk: `workspace#${teamId}#channel#${channelId}#ts#${ts}`,
-        token,
-        message_pk: pk,
-        message_sk: sk,
+        pk,
+        sk,
+        message_id: `${teamId}:${channelId}:${ts}`,
+        team_id: teamId,
+        channel_id: channelId,
+        user_id: slackEvent.user,
         ts,
-      },
-    },
-  }));
-
-  for (let i = 0; i < requests.length; i += 25) {
-    await ddb.send(new BatchWriteCommand({
-      RequestItems: {
-        [process.env.SEARCH_INDEX_TABLE]: requests.slice(i, i + 25),
+        thread_ts: slackEvent.thread_ts || null,
+        text,
+        normalized_text: normalized,
+        event_id: body.event_id,
+        deleted: false,
+        created_at: now,
+        updated_at: now,
       },
     }));
-  }
 
-  return { statusCode: 200, body: 'ok' };
-};
+    const requests = tokenize(text).map((token) => ({
+      PutRequest: {
+        Item: {
+          pk: `token#${token}`,
+          sk: `workspace#${teamId}#channel#${channelId}#ts#${ts}`,
+          token,
+          message_pk: pk,
+          message_sk: sk,
+          ts,
+        },
+      },
+    }));
+
+    for (let i = 0; i < requests.length; i += 25) {
+      await ddbSend(new BatchWriteCommand({
+        RequestItems: {
+          [process.env.SEARCH_INDEX_TABLE]: requests.slice(i, i + 25),
+        },
+      }));
+    }
+
+    return { statusCode: 200, body: 'ok' };
+  };
+}
+
+exports.createHandler = createHandler;
+exports.main = createHandler({
+  getSigningSecret,
+  ddbSend: (command) => ddb.send(command),
+});

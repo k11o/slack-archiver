@@ -80,6 +80,7 @@ These values are not stored in the repository and must be provided by the operat
 
 - Target AWS account and region.
 - Slack Signing Secret.
+- Slack Bot User OAuth Token.
 - Slack app name and target workspace.
 - Whether private channels should be archived.
 - Whether the first release should stay Slack-only or include a web UI.
@@ -94,12 +95,15 @@ High-level flow:
 
 ```bash
 npm install
-sam validate
-sam build
-sam deploy --guided
+uv run sam validate
+uv run sam build
+uv run sam deploy --guided
 ```
 
-Before deployment, store the Slack Signing Secret in SSM Parameter Store as `/slack-archiver/slack-signing-secret`.
+Before deployment, store Slack secrets in SSM Parameter Store:
+
+- `/slack-archiver/slack-signing-secret`
+- `/slack-archiver/slack-bot-token`
 
 ## Authentication direction
 

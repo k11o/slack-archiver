@@ -11,8 +11,9 @@ These values are intentionally not committed to the repository.
 | AWS account ID | AWS console or `aws sts get-caller-identity` | Local deploy notes only |
 | AWS region | Deployment decision | `sam deploy --region` |
 | Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString |
+| Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token | SSM Parameter Store SecureString |
 | Slack app request URLs | SAM stack output `ApiEndpoint` | Slack app settings |
-| Slack command name | Slack app settings | Recommended: `/archive` |
+| Slack command name | Slack app settings | `/hi-nick` |
 | Slack channel install targets | Slack workspace | Invite the app to channels to archive |
 
 ## AWS prerequisites
@@ -20,7 +21,7 @@ These values are intentionally not committed to the repository.
 Install and configure:
 
 - AWS CLI authenticated to the target account.
-- AWS SAM CLI.
+- uv. SAM CLI is managed through `pyproject.toml`.
 - Node.js 22 or newer.
 - npm.
 
@@ -30,15 +31,25 @@ Verify identity before deploying:
 aws sts get-caller-identity
 ```
 
-## Store Slack signing secret
+## Store Slack secrets
 
-Create the SSM parameter before deployment:
+Create the SSM parameters before deployment:
 
 ```bash
 aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
   --name /slack-archiver/slack-signing-secret \
   --type SecureString \
   --value '<SLACK_SIGNING_SECRET>' \
+  --overwrite
+
+aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/slack-bot-token \
+  --type SecureString \
+  --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
   --overwrite
 ```
 
@@ -50,8 +61,9 @@ From the repository root:
 
 ```bash
 npm install
-sam build
-sam deploy --guided
+uv run sam validate
+uv run sam build
+uv run sam deploy --guided --profile <AWS_PROFILE> --region ap-northeast-1
 ```
 
 Recommended guided values:
@@ -59,7 +71,7 @@ Recommended guided values:
 | Prompt | Value |
 |---|---|
 | Stack Name | `slack-archiver` |
-| AWS Region | Choose the nearest low-latency region, e.g. `ap-northeast-1` |
+| AWS Region | `ap-northeast-1` |
 | Confirm changes before deploy | `Y` |
 | Allow SAM CLI IAM role creation | `Y` |
 | Disable rollback | `N` |
@@ -88,7 +100,7 @@ After configuring Slack:
 
 1. Slack should verify the Events API request URL successfully.
 2. Post a test message in a channel where the app is present.
-3. Run `/archive <word from the test message>`.
+3. Run `/hi-nick <word from the test message>`.
 4. Confirm the command returns the archived message.
 5. Check CloudWatch Logs only if Slack returns an error.
 
@@ -110,5 +122,4 @@ Known follow-up tasks:
 - Add duplicate-event handling using Slack `event_id`.
 - Add message edit/delete handling.
 - Add pagination or better ranking for search results.
-- Add tests for Slack signature verification and tokenization.
 - Decide whether DynamoDB billing should remain on-demand or move to provisioned capacity for stricter free-tier alignment.

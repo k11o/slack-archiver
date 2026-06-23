@@ -1,5 +1,6 @@
 .aws-sam/
 node_modules/
+.venv/
 .env
 .DS_Store
 coverage/

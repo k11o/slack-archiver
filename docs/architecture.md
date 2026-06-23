@@ -22,7 +22,7 @@ Slack Slash Cmd ──┘
 | Component | Purpose |
 |---|---|
 | Slack Events API | Sends new message events to the archive as they happen. |
-| Slack Slash Command | Provides simple search from Slack, e.g. `/archive aws lambda`. |
+| Slack Slash Command | Provides simple search from Slack, e.g. `/hi-nick aws lambda`. |
 | API Gateway HTTP API | Public HTTPS endpoint for Slack and optional web frontend API. |
 | Lambda | Signature verification, normalization, persistence, and search. |
 | DynamoDB | Stores message records and optional search index entries. |
