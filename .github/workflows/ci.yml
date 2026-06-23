@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  AWS_DEFAULT_REGION: ap-northeast-1
+  SAM_CLI_TELEMETRY: 0
+
 jobs:
   test-and-build:
     name: Test and SAM build

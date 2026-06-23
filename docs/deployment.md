@@ -58,6 +58,43 @@ aws ssm put-parameter \
 
 Do not commit Slack secrets, bot tokens, user tokens, or app-level tokens.
 
+## GitHub Actions deployment authentication
+
+The current GitHub Actions workflow runs CI only. It does not deploy and does not need AWS credentials.
+
+When adding CD, use GitHub Actions OIDC to assume an AWS IAM role. Do not store long-lived AWS access keys in GitHub secrets.
+
+Recommended setup:
+
+- Create an IAM OIDC provider for `https://token.actions.githubusercontent.com` if the AWS account does not already have one.
+- Create a deploy role in AWS account `<AWS_ACCOUNT_ID>`.
+- Restrict the role trust policy to this repository and branch, for example `repo:k11o/slack-archiver:ref:refs/heads/main`.
+- Grant only the permissions needed for `sam deploy` of the `slack-archiver` stack.
+- In the deploy workflow, set:
+  - `permissions.id-token: write`
+  - `permissions.contents: read`
+  - `AWS_DEFAULT_REGION: ap-northeast-1`
+- Use `aws-actions/configure-aws-credentials` with the deploy role ARN.
+
+Example deploy credential step:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ap-northeast-1
+
+steps:
+  - uses: aws-actions/configure-aws-credentials@v4
+    with:
+      role-to-assume: arn:aws:iam::<AWS_ACCOUNT_ID>:role/<github-actions-deploy-role>
+      aws-region: ap-northeast-1
+```
+
+Keep Slack Signing Secret and Bot User OAuth Token in SSM Parameter Store. The deploy workflow should not know their plaintext values.
+
 ## Build and deploy
 
 From the repository root:
