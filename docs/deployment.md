@@ -12,6 +12,11 @@ These values are intentionally not committed to the repository.
 | AWS region | Deployment decision | `sam deploy --region` |
 | Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString |
 | Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token | SSM Parameter Store SecureString |
+| Slack OIDC client ID | Slack app settings: Sign in with Slack / OAuth | SAM parameter `SlackOidcClientId` |
+| Slack OIDC client secret | Slack app settings: Sign in with Slack / OAuth | SSM Parameter Store SecureString |
+| Slack workspace team ID | Slack workspace/app metadata | SAM parameter `AllowedSlackTeamId` |
+| Cognito domain prefix | Deployment decision | SAM parameter `CognitoDomainPrefix` |
+| Web base URL | Existing API endpoint | SAM parameter `WebBaseUrl` |
 | Slack app request URLs | SAM stack output `ApiEndpoint` | Slack app settings |
 | Slack command name | Slack app settings | `/hi-nick` |
 | Slack channel install targets | Slack workspace | Invite the app to channels to archive |
@@ -53,6 +58,14 @@ aws ssm put-parameter \
   --name /slack-archiver/slack-bot-token \
   --type SecureString \
   --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
+  --overwrite
+
+aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/slack-oidc-client-secret \
+  --type SecureString \
+  --value '<SLACK_OIDC_CLIENT_SECRET>' \
   --overwrite
 ```
 
@@ -104,6 +117,23 @@ npm install
 uv run sam validate
 uv run sam build
 uv run sam deploy --guided --profile <AWS_PROFILE> --region ap-northeast-1
+```
+
+For non-guided deployment after the web UI is configured:
+
+```bash
+uv run sam deploy \
+  --stack-name slack-archiver \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --resolve-s3 \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    SlackOidcClientId='<SLACK_OIDC_CLIENT_ID>' \
+    SlackOidcClientSecretParam='/slack-archiver/slack-oidc-client-secret' \
+    AllowedSlackTeamId='<SLACK_TEAM_ID>' \
+    CognitoDomainPrefix='<UNIQUE_COGNITO_DOMAIN_PREFIX>' \
+    WebBaseUrl='https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com'
 ```
 
 Recommended guided values:

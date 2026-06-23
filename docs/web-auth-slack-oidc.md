@@ -11,7 +11,7 @@ Slack Sign in with Slack (OIDC)
         ↓
 Amazon Cognito User Pool Hosted UI
         ↓
-API Gateway HTTP API JWT authorizer
+Web API Lambda Cognito JWT verification
         ↓
 Web search API
 ```
@@ -31,7 +31,7 @@ Implement web UI authentication using Slack workspace accounts.
 Expected deliverables:
 
 - SAM/Cognito infrastructure for Slack OIDC login.
-- Protected web API route using API Gateway JWT authorization or an equivalent claim-checking boundary.
+- Protected web API route using Cognito JWT verification and Slack workspace claim checking.
 - Documented Slack app callback URL and required OIDC scopes.
 - Tests or a local verification path for allowed-workspace and rejected-workspace behavior.
 
@@ -82,9 +82,10 @@ Implement Slack workspace login through Cognito Hosted UI.
 - Add a Cognito User Pool App Client.
 - Add a Cognito Hosted UI domain.
 - Configure Slack as an external OIDC identity provider.
-- Configure API Gateway HTTP API JWT authorization for future web API routes.
+- Configure protected web API routes to verify Cognito JWTs.
 - Store Slack OIDC client credentials outside Git, preferably in SSM Parameter Store SecureString or Secrets Manager.
 - Add environment/configuration for the allowed Slack workspace team ID.
+- Pass the deployed API base URL as `WebBaseUrl` so Cognito callback/logout URLs do not create a CloudFormation dependency cycle.
 
 ### Slack app settings
 
@@ -102,7 +103,7 @@ https://<cognito-domain>/oauth2/idpresponse
 
 - Require the authenticated user's Slack `team_id` to match the configured allowed team ID.
 - Prefer enforcing this before issuing application access.
-- If Cognito cannot reliably map or expose the Slack team claim, fall back to validating the claim in a Lambda authorizer or protected API handler.
+- Validate the Slack team claim in the protected API handler. This avoids a CloudFormation dependency cycle between API Gateway, Cognito callback URLs, and the Cognito app client.
 - Deny users from other Slack workspaces.
 
 ### Frontend behavior
@@ -138,5 +139,6 @@ This fallback is more code and should be used only after a small Cognito proof-o
 
 - Exact target Slack workspace team ID.
 - Cognito domain prefix or custom domain.
-- Frontend hosting path and callback/logout URLs.
+- Frontend/API base URL passed as `WebBaseUrl`.
+- Frontend callback/logout URLs.
 - Whether to use Cognito claim mapping, a Cognito trigger, a Lambda authorizer, or API handler validation for the Slack team claim after a proof-of-concept.

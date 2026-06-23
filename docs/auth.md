@@ -32,7 +32,7 @@ Cognito User Pool Hosted UI
         ↓ returns JWT
 Browser frontend
         ↓ Authorization: Bearer <JWT>
-API Gateway HTTP API JWT authorizer
+Web API Lambda verifies Cognito JWT
         ↓
 Search Lambda
 ```

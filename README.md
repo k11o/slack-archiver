@@ -35,6 +35,7 @@ Lambda search API
 - Store normalized message records in DynamoDB.
 - Build a simple n-gram search index for Japanese and English text.
 - Search from a Slack slash command or future web UI.
+- Search from a Slack-authenticated web UI.
 - Avoid EC2 and always-on compute.
 
 ## Non-goals for the first version

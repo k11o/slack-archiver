@@ -1,0 +1,101 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const { createSearchHandler, renderPage } = require('../src/web/handler');
+
+test('web search rejects users from another Slack workspace', async () => {
+  const handler = createSearchHandler({
+    allowedSlackTeamId: 'T_ALLOWED',
+    getBotToken: async () => 'xoxb-token',
+    ddbSend: async () => {
+      throw new Error('forbidden requests should not hit DynamoDB');
+    },
+    verifyAuth: async () => ({ 'custom:slack_team_id': 'T_OTHER' }),
+  });
+
+  const response = await handler(eventWithQuery({ q: 'hello' }));
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(JSON.parse(response.body), { error: 'forbidden_workspace' });
+});
+
+test('web search returns formatted hit context for allowed Slack workspace', async () => {
+  const hit = message({ ts: '1710000001.000000', text: 'hello world' });
+  const handler = createSearchHandler({
+    allowedSlackTeamId: 'T_ALLOWED',
+    getBotToken: async () => 'xoxb-token',
+    ddbSend: async () => null,
+    verifyAuth: async () => ({ 'custom:slack_team_id': 'T_ALLOWED' }),
+    search: async ({ query }) => {
+      assert.equal(query, 'hello');
+      return [hit];
+    },
+    loadContext: async () => [hit],
+    formatResult: async ({ context }) => ({
+      channel_name: '#general',
+      user_name: 'alice',
+      time: '2024-03-09T16:00:01.000Z',
+      text: 'hello world',
+      context,
+    }),
+  });
+
+  const response = await handler(eventWithQuery({ q: 'hello' }));
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.results.length, 1);
+  assert.equal(body.results[0].channel_name, '#general');
+  assert.equal(body.results[0].user_name, 'alice');
+});
+
+test('web search returns unauthorized when token verification fails', async () => {
+  const handler = createSearchHandler({
+    allowedSlackTeamId: 'T_ALLOWED',
+    getBotToken: async () => 'xoxb-token',
+    ddbSend: async () => {
+      throw new Error('unauthorized requests should not hit DynamoDB');
+    },
+    verifyAuth: async () => {
+      throw Object.assign(new Error('bad token'), { statusCode: 401 });
+    },
+  });
+
+  const response = await handler(eventWithQuery({ q: 'hello' }));
+
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(JSON.parse(response.body), { error: 'unauthorized' });
+});
+
+test('renderPage includes Cognito and API configuration', () => {
+  const page = renderPage({
+    cognitoDomain: 'https://example.auth.ap-northeast-1.amazoncognito.com',
+    clientId: 'client-id',
+    redirectUri: 'https://api.example/web/callback',
+    searchUrl: 'https://api.example/api/search',
+  });
+
+  assert.match(page, /Slack Archiver/);
+  assert.match(page, /bootstrap@5\.3\.8/);
+  assert.match(page, /client-id/);
+  assert.match(page, /https:\/\/api\.example\/api\/search/);
+});
+
+function eventWithQuery(queryStringParameters = {}) {
+  return {
+    queryStringParameters,
+    headers: {},
+  };
+}
+
+function message({ ts, text }) {
+  return {
+    pk: 'workspace#T_ALLOWED#channel#C123',
+    sk: `ts#${ts}`,
+    team_id: 'T_ALLOWED',
+    channel_id: 'C123',
+    user_id: 'U123',
+    ts,
+    text,
+    normalized_text: text,
+  };
+}

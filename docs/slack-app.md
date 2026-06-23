@@ -136,6 +136,17 @@ Use Slack channel UI or:
 - The summary message thread contains each hit with channel, user, time, and up to five messages before and after.
 - User references are rendered as plain display names, not Slack mentions.
 
+## Web UI Sign in with Slack
+
+When enabling the web UI, configure Slack OIDC login in the Slack app:
+
+```text
+Redirect URL: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
+Scopes: openid, profile, email
+```
+
+Store the Slack OIDC Client Secret in SSM Parameter Store as `/slack-archiver/slack-oidc-client-secret`.
+
 ## Security notes
 
 - Keep the Signing Secret in SSM Parameter Store SecureString or Secrets Manager.
