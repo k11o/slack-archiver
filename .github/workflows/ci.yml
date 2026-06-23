@@ -4,13 +4,16 @@ on:
   push:
     branches:
       - main
+      - codex/enable-github-actions-cd
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
   AWS_DEFAULT_REGION: ap-northeast-1
+  STACK_NAME: slack-archiver
   SAM_CLI_TELEMETRY: 0
 
 jobs:
@@ -50,3 +53,95 @@ jobs:
 
       - name: Build SAM application
         run: uv run sam build
+
+  deploy:
+    name: Deploy SAM application
+    runs-on: ubuntu-latest
+    needs: test-and-build
+    timeout-minutes: 20
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.17.0'
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.14'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Build SAM application
+        run: uv run sam build
+
+      - name: Deploy SAM application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SLACK_OIDC_CLIENT_ID=$(aws ssm get-parameter \
+            --region "$AWS_DEFAULT_REGION" \
+            --name /slack-archiver/slack-oidc-client-id \
+            --query 'Parameter.Value' \
+            --output text)
+
+          SLACK_OIDC_CLIENT_SECRET=$(aws ssm get-parameter \
+            --region "$AWS_DEFAULT_REGION" \
+            --with-decryption \
+            --name /slack-archiver/slack-oidc-client-secret \
+            --query 'Parameter.Value' \
+            --output text)
+
+          ALLOWED_SLACK_TEAM_ID=$(aws ssm get-parameter \
+            --region "$AWS_DEFAULT_REGION" \
+            --name /slack-archiver/allowed-slack-team-id \
+            --query 'Parameter.Value' \
+            --output text)
+
+          COGNITO_DOMAIN_PREFIX=$(aws ssm get-parameter \
+            --region "$AWS_DEFAULT_REGION" \
+            --name /slack-archiver/cognito-domain-prefix \
+            --query 'Parameter.Value' \
+            --output text)
+
+          WEB_BASE_URL=$(aws ssm get-parameter \
+            --region "$AWS_DEFAULT_REGION" \
+            --name /slack-archiver/web-base-url \
+            --query 'Parameter.Value' \
+            --output text)
+
+          uv run sam deploy \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_DEFAULT_REGION" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              SlackOidcClientId="$SLACK_OIDC_CLIENT_ID" \
+              SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
+              AllowedSlackTeamId="$ALLOWED_SLACK_TEAM_ID" \
+              CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
+              WebBaseUrl="$WEB_BASE_URL"
