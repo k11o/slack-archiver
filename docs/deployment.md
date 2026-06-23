@@ -12,6 +12,11 @@ These values are intentionally not committed to the repository.
 | AWS region | Deployment decision | `sam deploy --region` |
 | Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString |
 | Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token | SSM Parameter Store SecureString |
+| Slack OIDC client ID | Slack app settings: Sign in with Slack / OAuth | SAM parameter `SlackOidcClientId` |
+| Slack OIDC client secret | Slack app settings: Sign in with Slack / OAuth | SSM Parameter Store SecureString, then SAM parameter `SlackOidcClientSecret` at deploy time |
+| Slack workspace team ID | Slack workspace/app metadata | SAM parameter `AllowedSlackTeamId` |
+| Cognito domain prefix | Deployment decision | SAM parameter `CognitoDomainPrefix` |
+| Web base URL | Existing API endpoint | SAM parameter `WebBaseUrl` |
 | Slack app request URLs | SAM stack output `ApiEndpoint` | Slack app settings |
 | Slack command name | Slack app settings | `/hi-nick` |
 | Slack channel install targets | Slack workspace | Invite the app to channels to archive |
@@ -53,6 +58,14 @@ aws ssm put-parameter \
   --name /slack-archiver/slack-bot-token \
   --type SecureString \
   --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
+  --overwrite
+
+aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/slack-oidc-client-secret \
+  --type SecureString \
+  --value '<SLACK_OIDC_CLIENT_SECRET>' \
   --overwrite
 ```
 
@@ -106,6 +119,59 @@ uv run sam build
 uv run sam deploy --guided --profile <AWS_PROFILE> --region ap-northeast-1
 ```
 
+For non-guided deployment after the web UI is configured, read the Slack OIDC values from SSM and pass them as SAM parameters. `SlackOidcClientSecret` is a `NoEcho` CloudFormation parameter because `AWS::Cognito::UserPoolIdentityProvider.ProviderDetails.client_secret` does not support SSM SecureString dynamic references.
+
+```bash
+SLACK_OIDC_CLIENT_ID=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/slack-oidc-client-id \
+  --query 'Parameter.Value' \
+  --output text)
+
+SLACK_OIDC_CLIENT_SECRET=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --with-decryption \
+  --name /slack-archiver/slack-oidc-client-secret \
+  --query 'Parameter.Value' \
+  --output text)
+
+ALLOWED_SLACK_TEAM_ID=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/allowed-slack-team-id \
+  --query 'Parameter.Value' \
+  --output text)
+
+COGNITO_DOMAIN_PREFIX=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/cognito-domain-prefix \
+  --query 'Parameter.Value' \
+  --output text)
+
+WEB_BASE_URL=$(aws ssm get-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/web-base-url \
+  --query 'Parameter.Value' \
+  --output text)
+
+uv run sam deploy \
+  --stack-name slack-archiver \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --resolve-s3 \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    SlackOidcClientId="$SLACK_OIDC_CLIENT_ID" \
+    SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
+    AllowedSlackTeamId="$ALLOWED_SLACK_TEAM_ID" \
+    CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
+    WebBaseUrl="$WEB_BASE_URL"
+```
+
 Recommended guided values:
 
 | Prompt | Value |
@@ -134,6 +200,17 @@ Events API request URL: https://example.execute-api.ap-northeast-1.amazonaws.com
 Slash command request URL: https://example.execute-api.ap-northeast-1.amazonaws.com/slack/search
 ```
 
+Current deployed development stack:
+
+```text
+Stack: slack-archiver
+Region: ap-northeast-1
+ApiEndpoint: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com
+WebUrl: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
+CognitoSlackCallbackUrl: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
+AllowedSlackTeamId: <ALLOWED_SLACK_TEAM_ID>
+```
+
 ## Smoke tests
 
 After configuring Slack:
@@ -142,7 +219,21 @@ After configuring Slack:
 2. Post a test message in a channel where the app is present.
 3. Run `/hi-nick <word from the test message>`.
 4. Confirm the command returns the archived message.
-5. Check CloudWatch Logs only if Slack returns an error.
+5. Open `WebUrl`, sign in with Slack, and search for the same word.
+6. Check CloudWatch Logs only if Slack returns an error or the Web UI search fails.
+
+Basic unauthenticated Web API check:
+
+```bash
+curl -i 'https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/api/search?q=test'
+```
+
+Expected result:
+
+```text
+HTTP/2 401
+{"error":"unauthorized"}
+```
 
 ## Cost controls
 

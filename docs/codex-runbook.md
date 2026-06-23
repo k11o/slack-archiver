@@ -12,7 +12,8 @@ Primary workflow:
 2. Configure the Slack app endpoints.
 3. Verify Slack message ingestion.
 4. Verify Slack slash command search.
-5. Document any manual steps that cannot be automated safely.
+5. Verify Slack-authenticated Web UI search.
+6. Document any manual steps that cannot be automated safely.
 
 ## Repository context
 
@@ -46,7 +47,7 @@ Ask the operator for these values if they are not already available in the execu
 - Slack app name.
 - Slack workspace where the app should be installed.
 - Whether private channels should be archived. Current first release decision: no.
-- Whether the first release should include only Slack slash command search or also a web UI. Current first release decision: Slack slash command only.
+- Whether the release should include only Slack slash command search or also a web UI. Current state: Slack slash command search and Slack-authenticated Web UI search are implemented.
 
 Do not guess secrets or workspace-specific identifiers.
 
@@ -147,13 +148,13 @@ Run this acceptance test:
 
 ## Web app authentication decision
 
-Do not implement the web UI in the first pass unless explicitly requested.
-
-When web UI work begins, use:
+The Web UI is now implemented. Maintain this authentication model:
 
 - Cognito User Pool Hosted UI for login.
-- API Gateway HTTP API JWT authorizer for API access.
-- S3 + CloudFront for static frontend hosting.
+- Slack Sign in with Slack as the external OIDC provider.
+- Web API Lambda verifies Cognito JWTs.
+- Web API Lambda checks Slack's `team_id` claim against the configured workspace.
+- The frontend is currently served by API Gateway and Lambda at `/web`.
 
 Do not implement custom password storage.
 

@@ -5,7 +5,7 @@
 Use different authentication models for Slack endpoints and the web app.
 
 - Slack ingestion/search command endpoints: Slack request signature verification.
-- Web app: Amazon Cognito User Pool + API Gateway HTTP API JWT authorizer.
+- Web app: Amazon Cognito User Pool Hosted UI with Slack OIDC, plus Web API Lambda JWT verification.
 
 This keeps the Slack-facing endpoints compatible with Slack while giving the browser application normal user login and API authorization.
 
@@ -32,7 +32,7 @@ Cognito User Pool Hosted UI
         ↓ returns JWT
 Browser frontend
         ↓ Authorization: Bearer <JWT>
-API Gateway HTTP API JWT authorizer
+Web API Lambda verifies Cognito JWT
         ↓
 Search Lambda
 ```
@@ -42,7 +42,7 @@ Use Slack Sign in with Slack as the external OIDC provider for Cognito so that w
 ### Why Cognito
 
 - No EC2 or self-hosted identity service.
-- Works with API Gateway HTTP API JWT authorizers.
+- Keeps browser login and token issuance in an AWS managed service.
 - Suitable for a small number of users.
 - Can use email/password first, and later add Google/OIDC if needed.
 
@@ -74,4 +74,4 @@ This is the lowest-risk first release. If search through Slack is enough, skip t
 
 ## Initial decision
 
-Implement Slack slash command search first. When adding the web UI, use Cognito User Pool plus API Gateway JWT authorizer.
+Implement Slack slash command search first. The Web UI now uses Cognito User Pool Hosted UI with Slack as an external OIDC provider. The protected Web API verifies Cognito JWTs in Lambda and checks the Slack workspace claim there, which avoids a CloudFormation dependency cycle between API Gateway routes, Cognito callback URLs, and the Cognito app client.

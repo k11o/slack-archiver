@@ -27,7 +27,7 @@ First-release target:
 | Setting | Value |
 |---|---|
 | Workspace coverage | Public channels only |
-| Web UI | Disabled / not implemented |
+| Web UI | Enabled through Slack Sign in and Cognito Hosted UI |
 | Slash command | `/hi-nick` |
 | Events endpoint | `<API_ENDPOINT>/slack/events` |
 | Slash command endpoint | `<API_ENDPOINT>/slack/search` |
@@ -135,6 +135,36 @@ Use Slack channel UI or:
 - `/hi-nick <test word>` posts one search summary message.
 - The summary message thread contains each hit with channel, user, time, and up to five messages before and after.
 - User references are rendered as plain display names, not Slack mentions.
+
+## Web UI Sign in with Slack
+
+When enabling the web UI, configure Slack OIDC login in the Slack app:
+
+```text
+Redirect URL: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
+Scopes: openid, profile, email
+```
+
+For the deployed development stack:
+
+```text
+Redirect URL: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
+Web URL: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
+```
+
+The Slack redirect URL must match exactly. If Slack shows `redirect_uri did not match any configured URIs`, add the Cognito `/oauth2/idpresponse` URL above to **OAuth & Permissions > Redirect URLs** and save it. Do not use the Web UI callback URL (`/web/callback`) as the Slack redirect URL.
+
+Store the Slack OIDC Client Secret in SSM Parameter Store as `/slack-archiver/slack-oidc-client-secret`.
+
+The user token scopes for web login only need:
+
+```text
+openid
+profile
+email
+```
+
+Do not add channel history scopes to the user token for web login. Message archive search uses the stored DynamoDB data and the bot token only where Slack API lookups or Slack posts are needed.
 
 ## Security notes
 

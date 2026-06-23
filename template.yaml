@@ -2,6 +2,25 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: Lightweight Slack message archiver and search API.
 
+Parameters:
+  SlackOidcClientId:
+    Type: String
+    Description: Slack Sign in with Slack OIDC client ID for the web UI.
+    NoEcho: true
+  SlackOidcClientSecret:
+    Type: String
+    Description: Slack Sign in with Slack OIDC client secret for the web UI.
+    NoEcho: true
+  AllowedSlackTeamId:
+    Type: String
+    Description: Slack workspace team ID allowed to access the web UI.
+  CognitoDomainPrefix:
+    Type: String
+    Description: Globally unique Cognito Hosted UI domain prefix.
+  WebBaseUrl:
+    Type: String
+    Description: Public API Gateway base URL that serves the web UI, for example https://example.execute-api.ap-northeast-1.amazonaws.com.
+
 Globals:
   Function:
     Runtime: nodejs24.x
@@ -75,6 +94,134 @@ Resources:
         - SSMParameterReadPolicy:
             ParameterName: slack-archiver/slack-bot-token
 
+  WebFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/web/handler.page
+      Environment:
+        Variables:
+          COGNITO_DOMAIN: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
+          COGNITO_CLIENT_ID: !Ref WebUserPoolClient
+          COGNITO_REDIRECT_URI: !Sub '${WebBaseUrl}/web/callback'
+          WEB_SEARCH_URL: !Sub '${WebBaseUrl}/api/search'
+      Events:
+        WebRoot:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /web
+            Method: GET
+        WebCallback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /web/callback
+            Method: GET
+
+  WebApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/web/handler.search
+      Timeout: 30
+      Environment:
+        Variables:
+          ALLOWED_SLACK_TEAM_ID: !Ref AllowedSlackTeamId
+          COGNITO_ISSUER: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${WebUserPool}'
+          COGNITO_CLIENT_ID: !Ref WebUserPoolClient
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SearchIndexTable
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/slack-bot-token
+      Events:
+        WebSearch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/search
+            Method: GET
+
+  WebUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: slack-archiver-web
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: slack_team_id
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: slack_user_id
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+
+  WebUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref WebUserPool
+
+  WebUserPoolSlackProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Properties:
+      UserPoolId: !Ref WebUserPool
+      ProviderName: Slack
+      ProviderType: OIDC
+      ProviderDetails:
+        client_id: !Ref SlackOidcClientId
+        client_secret: !Ref SlackOidcClientSecret
+        attributes_request_method: GET
+        authorize_scopes: openid profile email
+        oidc_issuer: https://slack.com
+      AttributeMapping:
+        email: email
+        name: name
+        custom:slack_team_id: https://slack.com/team_id
+        custom:slack_user_id: https://slack.com/user_id
+
+  WebUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn:
+      - WebUserPoolSlackProvider
+    Properties:
+      UserPoolId: !Ref WebUserPool
+      ClientName: slack-archiver-web
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - Slack
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Sub '${WebBaseUrl}/web/callback'
+      LogoutURLs:
+        - !Sub '${WebBaseUrl}/web'
+      ReadAttributes:
+        - email
+        - name
+        - custom:slack_team_id
+        - custom:slack_user_id
+      WriteAttributes:
+        - email
+        - name
+        - custom:slack_team_id
+        - custom:slack_user_id
+
   MessagesTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -109,3 +256,9 @@ Outputs:
   ApiEndpoint:
     Description: API Gateway endpoint
     Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com'
+  WebUrl:
+    Description: Web search UI URL
+    Value: !Sub '${WebBaseUrl}/web'
+  CognitoSlackCallbackUrl:
+    Description: Slack OIDC redirect URL to configure in the Slack app
+    Value: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse'

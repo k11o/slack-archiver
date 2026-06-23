@@ -16,14 +16,14 @@ AWS Lambda
 Amazon DynamoDB
 ```
 
-Optional frontend:
+Web frontend:
 
 ```text
-S3 static site + CloudFront
+API Gateway HTTP API /web
         ↓
-Cognito User Pool sign-in
+Cognito Hosted UI with Slack Sign in
         ↓
-API Gateway JWT authorizer
+Web API Lambda verifies Cognito JWT and Slack workspace claim
         ↓
 Lambda search API
 ```
@@ -34,7 +34,8 @@ Lambda search API
 - Verify Slack request signatures.
 - Store normalized message records in DynamoDB.
 - Build a simple n-gram search index for Japanese and English text.
-- Search from a Slack slash command or future web UI.
+- Search from a Slack slash command.
+- Search from a Slack-authenticated web UI.
 - Avoid EC2 and always-on compute.
 
 ## Non-goals for the first version
@@ -83,9 +84,10 @@ These values are not stored in the repository and must be provided by the operat
 - Target AWS account and region.
 - Slack Signing Secret.
 - Slack Bot User OAuth Token.
+- Slack OIDC Client ID and Client Secret.
 - Slack app name and target workspace.
 - Whether private channels should be archived.
-- Whether the first release should stay Slack-only or include a web UI.
+- Slack workspace team ID for Web UI access control.
 
 Secrets must not be committed to Git.
 
@@ -106,9 +108,14 @@ Before deployment, store Slack secrets in SSM Parameter Store:
 
 - `/slack-archiver/slack-signing-secret`
 - `/slack-archiver/slack-bot-token`
+- `/slack-archiver/slack-oidc-client-id`
+- `/slack-archiver/slack-oidc-client-secret`
+- `/slack-archiver/allowed-slack-team-id`
+- `/slack-archiver/cognito-domain-prefix`
+- `/slack-archiver/web-base-url`
 
 ## Authentication direction
 
 Slack-facing endpoints use Slack request signature verification.
 
-The web app should not be implemented in the first pass unless explicitly requested. When added, use Cognito User Pool Hosted UI plus API Gateway HTTP API JWT authorizer. Do not implement custom password storage.
+The web app uses Cognito Hosted UI with Slack Sign in as an external OIDC provider. The Web API Lambda verifies Cognito JWTs and rejects users whose Slack `team_id` claim does not match the configured workspace. Do not implement custom password storage.

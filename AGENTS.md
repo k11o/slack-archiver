@@ -65,9 +65,10 @@ uv run sam deploy \
 
 ## Web Authentication
 
-- Future web UI auth should use Slack Sign in with Slack through Cognito Hosted UI first.
+- Web UI auth uses Slack Sign in with Slack through Cognito Hosted UI.
 - Validate Slack's OIDC `https://slack.com/team_id` claim against the allowed workspace before granting application access.
-- See `docs/web-auth-slack-oidc.md` before starting web auth implementation.
+- Web API routes must verify Cognito JWTs and reject users from other Slack workspaces.
+- See `docs/web-auth-slack-oidc.md` before changing web auth implementation.
 
 ## Data Model
 
