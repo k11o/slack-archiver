@@ -200,6 +200,17 @@ Events API request URL: https://example.execute-api.ap-northeast-1.amazonaws.com
 Slash command request URL: https://example.execute-api.ap-northeast-1.amazonaws.com/slack/search
 ```
 
+Current deployed development stack:
+
+```text
+Stack: slack-archiver
+Region: ap-northeast-1
+ApiEndpoint: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com
+WebUrl: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
+CognitoSlackCallbackUrl: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
+AllowedSlackTeamId: <ALLOWED_SLACK_TEAM_ID>
+```
+
 ## Smoke tests
 
 After configuring Slack:
@@ -208,7 +219,21 @@ After configuring Slack:
 2. Post a test message in a channel where the app is present.
 3. Run `/hi-nick <word from the test message>`.
 4. Confirm the command returns the archived message.
-5. Check CloudWatch Logs only if Slack returns an error.
+5. Open `WebUrl`, sign in with Slack, and search for the same word.
+6. Check CloudWatch Logs only if Slack returns an error or the Web UI search fails.
+
+Basic unauthenticated Web API check:
+
+```bash
+curl -i 'https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/api/search?q=test'
+```
+
+Expected result:
+
+```text
+HTTP/2 401
+{"error":"unauthorized"}
+```
 
 ## Cost controls
 

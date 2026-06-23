@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add authentication for the future web UI using accounts from the target Slack workspace.
+Authenticate the Web UI using accounts from the target Slack workspace.
 
 The preferred first implementation is:
 
@@ -18,9 +18,20 @@ Web search API
 
 Do not implement custom password storage.
 
+## Current deployed configuration
+
+```text
+Web URL: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
+Cognito domain: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com
+Slack redirect URL: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
+Allowed Slack team ID: <ALLOWED_SLACK_TEAM_ID>
+```
+
+The deployed Web API verifies Cognito JWTs in Lambda and validates the mapped Slack team claim before searching archived messages.
+
 ## Task brief
 
-Implement web UI authentication using Slack workspace accounts.
+Maintain web UI authentication using Slack workspace accounts.
 
 - Use Slack Sign in with Slack as an OIDC provider.
 - Prefer Cognito User Pool Hosted UI with Slack configured as an external OIDC IdP.
@@ -74,14 +85,14 @@ The Slack authorization request may include a `team` parameter to improve the lo
 
 ## Preferred implementation task
 
-Implement Slack workspace login through Cognito Hosted UI.
+Implement or maintain Slack workspace login through Cognito Hosted UI.
 
 ### Infrastructure
 
-- Add a Cognito User Pool for web users.
-- Add a Cognito User Pool App Client.
-- Add a Cognito Hosted UI domain.
-- Configure Slack as an external OIDC identity provider.
+- Add or maintain a Cognito User Pool for web users.
+- Add or maintain a Cognito User Pool App Client.
+- Add or maintain a Cognito Hosted UI domain.
+- Configure or maintain Slack as an external OIDC identity provider.
 - Configure protected web API routes to verify Cognito JWTs.
 - Store Slack OIDC client credentials outside Git. Keep the client secret in SSM Parameter Store SecureString, then pass it to SAM as a `NoEcho` parameter at deploy time because Cognito OIDC provider `client_secret` does not support SSM SecureString dynamic references.
 - Add environment/configuration for the allowed Slack workspace team ID.
@@ -94,6 +105,12 @@ Implement Slack workspace login through Cognito Hosted UI.
 
 ```text
 https://<cognito-domain>/oauth2/idpresponse
+```
+
+- The redirect URL must be registered in Slack OAuth & Permissions exactly as Cognito sends it. For the current development stack, use:
+
+```text
+https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
 ```
 
 - Add the web app logout URL when the frontend exists.
@@ -110,7 +127,7 @@ https://<cognito-domain>/oauth2/idpresponse
 
 - Redirect unauthenticated users to Cognito Hosted UI.
 - After login, store tokens only in browser-safe storage appropriate for the chosen frontend framework.
-- Send API requests with `Authorization: Bearer <Cognito access or ID token, whichever the JWT authorizer is configured for>`.
+- Send API requests with `Authorization: Bearer <Cognito ID token>`.
 - Provide logout through Cognito Hosted UI logout.
 
 ## Fallback implementation task
@@ -137,8 +154,5 @@ This fallback is more code and should be used only after a small Cognito proof-o
 
 ## Open implementation questions
 
-- Exact target Slack workspace team ID.
-- Cognito domain prefix or custom domain.
-- Frontend/API base URL passed as `WebBaseUrl`.
-- Frontend callback/logout URLs.
-- Whether to use Cognito claim mapping, a Cognito trigger, a Lambda authorizer, or API handler validation for the Slack team claim after a proof-of-concept.
+- Production custom domain, if one is needed later.
+- Whether to add a Cognito trigger for stricter pre-token workspace enforcement. The current implementation enforces workspace access in the protected Web API Lambda.
