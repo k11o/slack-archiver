@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - codex/enable-github-actions-cd
   pull_request:
   workflow_dispatch:
 

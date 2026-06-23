@@ -73,9 +73,9 @@ Do not commit Slack secrets, bot tokens, user tokens, or app-level tokens.
 
 ## GitHub Actions deployment authentication
 
-The GitHub Actions workflow runs CI for pull requests. On `main`, and on the
-temporary `codex/enable-github-actions-cd` setup branch, it also deploys the SAM
-application after tests and `sam build` pass.
+The GitHub Actions workflow runs CI for pull requests. On `main`, it also
+deploys the SAM application after tests and `sam build` pass. The workflow can
+also be started manually with `workflow_dispatch`.
 
 CD uses GitHub Actions OIDC to assume an AWS IAM role. Do not store long-lived
 AWS access keys in GitHub secrets.
