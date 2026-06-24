@@ -37,7 +37,7 @@ function createHandler({ getSigningSecret: loadSigningSecret, ddbSend }) {
     }
 
     const slackEvent = body.event;
-    if (!slackEvent || slackEvent.type !== 'message' || slackEvent.subtype) {
+    if (!slackEvent || slackEvent.type !== 'message' || isIgnoredMessageEvent(slackEvent)) {
       return { statusCode: 200, body: 'ignored' };
     }
 
@@ -59,6 +59,10 @@ function createHandler({ getSigningSecret: loadSigningSecret, ddbSend }) {
         team_id: teamId,
         channel_id: channelId,
         user_id: slackEvent.user,
+        subtype: slackEvent.subtype || null,
+        bot_id: slackEvent.bot_id || null,
+        app_id: slackEvent.app_id || null,
+        bot_profile: slackEvent.bot_profile || null,
         ts,
         thread_ts: slackEvent.thread_ts || null,
         text,
@@ -95,7 +99,17 @@ function createHandler({ getSigningSecret: loadSigningSecret, ddbSend }) {
   };
 }
 
+function isIgnoredMessageEvent(slackEvent) {
+  return Boolean(
+    slackEvent.subtype
+    || slackEvent.bot_id
+    || slackEvent.app_id
+    || slackEvent.bot_profile
+  );
+}
+
 exports.createHandler = createHandler;
+exports.isIgnoredMessageEvent = isIgnoredMessageEvent;
 exports.main = createHandler({
   getSigningSecret,
   ddbSend: (command) => ddb.send(command),

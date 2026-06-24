@@ -2,6 +2,7 @@ const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
 const { DynamoDBDocumentClient, GetCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { emojify } = require('node-emoji');
 const { parseBody, verifySlackSignature } = require('../common/slack');
 const { normalizeText, tokenize } = require('../common/text');
 
@@ -16,6 +17,7 @@ const MAX_QUERY_TOKENS = 5;
 const MAX_CANDIDATES = 20;
 const MAX_HITS = 5;
 const CONTEXT_SIZE = 5;
+const CONTEXT_PAGE_LIMIT = 25;
 
 async function getSigningSecret() {
   if (cachedSigningSecret) return cachedSigningSecret;
@@ -214,32 +216,68 @@ function isBotMessage(message) {
   return message.subtype === 'bot_message'
     || Boolean(message.bot_id)
     || Boolean(message.bot_profile)
-    || Boolean(message.app_id);
+    || Boolean(message.app_id)
+    || isArchiverGeneratedMessage(message.text);
+}
+
+function isArchiverGeneratedMessage(text) {
+  const value = decodeSlackEntities(text).trim();
+  return / の検索: `[^`]*` \(\d+件/.test(value)
+    || /^\*\d+\/\d+\* <#[A-Z0-9]+(?:\|[^>]+)?> <!date\^\d+/.test(value);
 }
 
 async function loadMessageContext({ message, ddbSend }) {
   const [before, after] = await Promise.all([
-    ddbSend(new QueryCommand({
-      TableName: process.env.MESSAGES_TABLE,
-      KeyConditionExpression: 'pk = :pk AND sk < :sk',
-      ExpressionAttributeValues: { ':pk': message.pk, ':sk': message.sk },
-      ScanIndexForward: false,
-      Limit: CONTEXT_SIZE,
-    })),
-    ddbSend(new QueryCommand({
-      TableName: process.env.MESSAGES_TABLE,
-      KeyConditionExpression: 'pk = :pk AND sk > :sk',
-      ExpressionAttributeValues: { ':pk': message.pk, ':sk': message.sk },
-      ScanIndexForward: true,
-      Limit: CONTEXT_SIZE,
-    })),
+    loadDirectionalContext({ message, ddbSend, before: true }),
+    loadDirectionalContext({ message, ddbSend, before: false }),
   ]);
 
   return [
-    ...(before.Items || []).reverse(),
+    ...before.reverse(),
     message,
-    ...(after.Items || []),
-  ];
+    ...after,
+  ].filter((item) => item.sk === message.sk || (item && !item.deleted && !isBotMessage(item)));
+}
+
+async function loadDirectionalContext({ message, ddbSend, before }) {
+  const items = [];
+  let exclusiveStartKey;
+
+  while (items.length < CONTEXT_SIZE) {
+    const input = {
+      TableName: process.env.MESSAGES_TABLE,
+      KeyConditionExpression: before ? 'pk = :pk AND sk < :sk' : 'pk = :pk AND sk > :sk',
+      ExpressionAttributeValues: { ':pk': message.pk, ':sk': message.sk },
+      ScanIndexForward: !before,
+      Limit: CONTEXT_PAGE_LIMIT,
+    };
+    if (exclusiveStartKey) input.ExclusiveStartKey = exclusiveStartKey;
+
+    const result = await ddbSend(new QueryCommand(input));
+
+    for (const item of result.Items || []) {
+      if (!item.deleted && !isBotMessage(item) && isSameConversation(message, item)) {
+        items.push(item);
+        if (items.length >= CONTEXT_SIZE) break;
+      }
+    }
+
+    if (!result.LastEvaluatedKey) break;
+    exclusiveStartKey = result.LastEvaluatedKey;
+  }
+
+  return items;
+}
+
+function isSameConversation(reference, candidate) {
+  if (reference.pk !== candidate.pk) return false;
+  const referenceThreadTs = getReplyThreadTs(reference);
+  if (!referenceThreadTs) return !getReplyThreadTs(candidate);
+  return candidate.ts === referenceThreadTs || candidate.thread_ts === referenceThreadTs;
+}
+
+function getReplyThreadTs(message) {
+  return message.thread_ts && message.thread_ts !== message.ts ? message.thread_ts : null;
 }
 
 async function loadUserNames({ botToken, messages, slackUserInfo }) {
@@ -288,9 +326,44 @@ function formatSlackUser(userId, userNames = new Map()) {
 }
 
 function formatSlackMessageText(text, userNames = new Map()) {
-  return escapeSlackText(String(text || '').replace(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g, (_match, userId) => (
-    userNames.get(userId) || sanitizeDisplayName(userId)
-  )));
+  return escapeSlackText(emojify(renderSlackMessageText(text, userNames)));
+}
+
+function renderSlackMessageText(text, userNames = new Map()) {
+  return decodeSlackEntities(text)
+    .replace(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g, (_match, userId) => (
+      userNames.get(userId) || sanitizeDisplayName(userId)
+    ))
+    .replace(/<#([A-Z0-9]+)(?:\|([^>]+))?>/g, (_match, channelId, channelName) => (
+      channelName ? `#${channelName}` : `#${channelId}`
+    ))
+    .replace(/<!date\^(\d+)\^[^|>]*(?:\|([^>]*))?>/g, (_match, seconds, fallback) => (
+      fallback || formatLocalTime(seconds)
+    ))
+    .replace(/<((?:https?|mailto):[^>|]+)\|([^>]+)>/g, (_match, url, label) => (
+      label === url ? url : `${label} (${url})`
+    ))
+    .replace(/<((?:https?|mailto):[^>]+)>/g, (_match, url) => url)
+    .replace(/<!([^>|]+)(?:\|([^>]+))?>/g, (_match, token, label) => label || token);
+}
+
+function decodeSlackEntities(value) {
+  let text = String(value || '');
+  for (let i = 0; i < 3; i += 1) {
+    const decoded = text
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+    if (decoded === text) return decoded;
+    text = decoded;
+  }
+  return text;
+}
+
+function formatLocalTime(seconds) {
+  const date = new Date(Number(seconds) * 1000);
+  if (Number.isNaN(date.getTime())) return '(unknown time)';
+  return date.toISOString().replace('T', ' ').slice(0, 16);
 }
 
 function sanitizeDisplayName(value) {
@@ -329,6 +402,7 @@ exports.loadMessageContext = loadMessageContext;
 exports.loadUserNames = loadUserNames;
 exports.formatHitThreadMessage = formatHitThreadMessage;
 exports.formatSlackMessageText = formatSlackMessageText;
+exports.isArchiverGeneratedMessage = isArchiverGeneratedMessage;
 exports.main = createHandler({
   getSigningSecret,
   invokeWorker: invokeSearchWorker,
