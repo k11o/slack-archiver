@@ -5,6 +5,7 @@ const {
   createWorker,
   formatHitThreadMessage,
   formatSlackMessageText,
+  isArchiverGeneratedMessage,
   loadMessageContext,
   loadUserNames,
   searchMessages,
@@ -160,6 +161,41 @@ test('search skips bot messages and continues to human results', async () => {
   assert.deepEqual(results.map((item) => item.text), ['needle from human']);
 });
 
+test('search skips previously archived search result messages', async () => {
+  process.env.SEARCH_INDEX_TABLE = 'index-table';
+  process.env.MESSAGES_TABLE = 'messages-table';
+
+  const generatedParent = message({ ts: '1710000005.000000', text: 'alice の検索: `needle` (3件)' });
+  const generatedThread = message({ ts: '1710000006.000000', text: '*1/3* <#C123> <!date^1710000005^{date_short_pretty} {time}|1710000005.000000> alice\n→ <!date^1710000005^{date_short_pretty} {time}|1710000005.000000> alice: needle' });
+  const humanHit = message({ ts: '1710000007.000000', text: 'needle from human' });
+  const messages = new Map([
+    [generatedParent.sk, generatedParent],
+    [generatedThread.sk, generatedThread],
+    [humanHit.sk, humanHit],
+  ]);
+
+  const results = await searchMessages({
+    query: 'needle',
+    ddbSend: async (command) => {
+      if (command.constructor.name === 'QueryCommand') {
+        return {
+          Items: [
+            { message_pk: generatedParent.pk, message_sk: generatedParent.sk },
+            { message_pk: generatedThread.pk, message_sk: generatedThread.sk },
+            { message_pk: humanHit.pk, message_sk: humanHit.sk },
+          ],
+        };
+      }
+      if (command.constructor.name === 'GetCommand') {
+        return { Item: messages.get(command.input.Key.sk) };
+      }
+      throw new Error(`unexpected command: ${command.constructor.name}`);
+    },
+  });
+
+  assert.deepEqual(results.map((item) => item.text), ['needle from human']);
+});
+
 test('loadMessageContext returns five previous messages, hit, and five following messages in order', async () => {
   process.env.MESSAGES_TABLE = 'messages-table';
   const hit = message({ ts: '1710000005.000000', text: 'hit' });
@@ -191,6 +227,62 @@ test('loadMessageContext returns five previous messages, hit, and five following
   ]);
 });
 
+test('loadMessageContext excludes generated search messages from surrounding context', async () => {
+  process.env.MESSAGES_TABLE = 'messages-table';
+  const hit = message({ ts: '1710000005.000000', text: 'needle' });
+  const generated = message({ ts: '1710000004.000000', text: 'alice の検索: `needle` (1件)' });
+  const human = message({ ts: '1710000006.000000', text: 'human context' });
+
+  const context = await loadMessageContext({
+    message: hit,
+    ddbSend: async (command) => {
+      if (command.input.KeyConditionExpression.includes('sk <')) return { Items: [generated] };
+      return { Items: [human] };
+    },
+  });
+
+  assert.deepEqual(context.map((item) => item.text), ['needle', 'human context']);
+});
+
+test('loadMessageContext excludes thread replies from top-level timeline context', async () => {
+  process.env.MESSAGES_TABLE = 'messages-table';
+  const hit = message({ ts: '1710000005.000000', text: 'top-level hit' });
+  const threadReply = message({ ts: '1710000004.000000', thread_ts: '1710000001.000000', text: 'reply in another thread' });
+  const topLevelBefore = message({ ts: '1710000003.000000', text: 'top-level before' });
+  const topLevelAfter = message({ ts: '1710000006.000000', text: 'top-level after' });
+
+  const context = await loadMessageContext({
+    message: hit,
+    ddbSend: async (command) => {
+      if (command.input.KeyConditionExpression.includes('sk <')) return { Items: [threadReply, topLevelBefore] };
+      return { Items: [topLevelAfter] };
+    },
+  });
+
+  assert.deepEqual(context.map((item) => item.text), ['top-level before', 'top-level hit', 'top-level after']);
+});
+
+test('loadMessageContext keeps only the same thread for threaded hits', async () => {
+  process.env.MESSAGES_TABLE = 'messages-table';
+  const threadTs = '1710000001.000000';
+  const root = message({ ts: threadTs, text: 'thread root' });
+  const unrelatedTopLevel = message({ ts: '1710000003.000000', text: 'unrelated top-level' });
+  const previousReply = message({ ts: '1710000004.000000', thread_ts: threadTs, text: 'previous reply' });
+  const hit = message({ ts: '1710000005.000000', thread_ts: threadTs, text: 'threaded hit' });
+  const nextReply = message({ ts: '1710000006.000000', thread_ts: threadTs, text: 'next reply' });
+  const unrelatedReply = message({ ts: '1710000007.000000', thread_ts: '1710000002.000000', text: 'other thread reply' });
+
+  const context = await loadMessageContext({
+    message: hit,
+    ddbSend: async (command) => {
+      if (command.input.KeyConditionExpression.includes('sk <')) return { Items: [previousReply, unrelatedTopLevel, root] };
+      return { Items: [nextReply, unrelatedReply] };
+    },
+  });
+
+  assert.deepEqual(context.map((item) => item.text), ['thread root', 'previous reply', 'threaded hit', 'next reply']);
+});
+
 test('formatHitThreadMessage includes channel, user, time, and hit marker', () => {
   const hit = message({ ts: '1710000005.000000', text: '<needle> & context' });
   const userNames = new Map([['U123', 'alice']]);
@@ -211,6 +303,27 @@ test('formatSlackMessageText renders user mentions as plain display names', () =
   assert.equal(formatSlackMessageText('hi <@U999>', userNames), 'hi U999');
 });
 
+test('formatSlackMessageText renders Slack links and dates as readable text', () => {
+  const text = formatSlackMessageText(
+    'see <https://example.com/path?a=1&amp;b=2|example link> at <!date^1710000005^{date_short_pretty} {time}|2024-03-09 16:00> in <#C123|general>',
+  );
+
+  assert.equal(text, 'see example link (https://example.com/path?a=1&amp;b=2) at 2024-03-09 16:00 in #general');
+});
+
+test('formatSlackMessageText renders standard emoji shortnames', () => {
+  assert.equal(
+    formatSlackMessageText('q92#fa^hfyK@yG0 :heavy_plus_sign: :herb: :custom_unknown:'),
+    'q92#fa^hfyK@yG0 \u2795 \u{1F33F} :custom_unknown:',
+  );
+});
+
+test('isArchiverGeneratedMessage detects parent and threaded result posts', () => {
+  assert.equal(isArchiverGeneratedMessage('alice の検索: `needle` (3件)'), true);
+  assert.equal(isArchiverGeneratedMessage('*1/3* <#C123> <!date^1710000005^{date_short_pretty} {time}|1710000005.000000> alice'), true);
+  assert.equal(isArchiverGeneratedMessage('ordinary message with needle'), false);
+});
+
 test('loadUserNames resolves senders and mentioned users', async () => {
   const names = await loadUserNames({
     botToken: 'xoxb-token',
@@ -227,7 +340,7 @@ test('loadUserNames resolves senders and mentioned users', async () => {
   assert.equal(names.get('U555'), 'bob');
 });
 
-function message({ ts, text }) {
+function message({ ts, text, thread_ts = null }) {
   return {
     pk: 'workspace#T123#channel#C123',
     sk: `ts#${ts}`,
@@ -235,6 +348,7 @@ function message({ ts, text }) {
     channel_id: 'C123',
     user_id: 'U123',
     ts,
+    thread_ts,
     text,
     normalized_text: text.toLowerCase(),
   };
