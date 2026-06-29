@@ -77,9 +77,10 @@ function createHandler({ getSigningSecret: loadSigningSecret, ddbSend }) {
     const requests = tokenize(text).map((token) => ({
       PutRequest: {
         Item: {
-          pk: `token#${token}`,
+          pk: `workspace#${teamId}#token#${token}`,
           sk: `workspace#${teamId}#channel#${channelId}#ts#${ts}`,
           token,
+          team_id: teamId,
           message_pk: pk,
           message_sk: sk,
           ts,

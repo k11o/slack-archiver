@@ -2,7 +2,7 @@
 
 ## Goal
 
-Authenticate the Web UI using accounts from the target Slack workspace.
+Authenticate the Web UI using Slack workspace accounts.
 
 The preferred first implementation is:
 
@@ -24,10 +24,10 @@ Do not implement custom password storage.
 Web URL: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
 Cognito domain: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com
 Slack redirect URL: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
-Allowed Slack team ID: <ALLOWED_SLACK_TEAM_ID>
+Allowed Slack team IDs: <ALLOWED_SLACK_TEAM_IDS> (optional)
 ```
 
-The deployed Web API verifies Cognito JWTs in Lambda and validates the mapped Slack team claim before searching archived messages.
+The deployed Web API verifies Cognito JWTs in Lambda, reads the mapped Slack team claim, and searches only archived messages for that Slack workspace. If an allowlist is configured, the API rejects users whose Slack team claim is not in that list.
 
 ## Task brief
 
@@ -35,14 +35,14 @@ Maintain web UI authentication using Slack workspace accounts.
 
 - Use Slack Sign in with Slack as an OIDC provider.
 - Prefer Cognito User Pool Hosted UI with Slack configured as an external OIDC IdP.
-- Restrict access to the configured Slack workspace by validating Slack's `https://slack.com/team_id` claim.
+- Validate Slack's `https://slack.com/team_id` claim and use it as the search workspace scope.
 - Do not change Slack Events API or `/hi-nick` slash command authentication; those endpoints must continue to use Slack request signature verification.
 - Do not commit Slack OIDC Client Secret or any Slack tokens.
 
 Expected deliverables:
 
 - SAM/Cognito infrastructure for Slack OIDC login.
-- Protected web API route using Cognito JWT verification and Slack workspace claim checking.
+- Protected web API route using Cognito JWT verification and Slack workspace-scoped search.
 - Documented Slack app callback URL and required OIDC scopes.
 - Tests or a local verification path for allowed-workspace and rejected-workspace behavior.
 
@@ -79,7 +79,7 @@ Slack's OIDC ID token includes Slack-specific claims such as:
 - `https://slack.com/team_id`
 - `https://slack.com/user_id`
 
-The web UI must authorize only users whose `https://slack.com/team_id` matches the configured workspace team ID.
+The web UI must use `https://slack.com/team_id` as an authorization and data-isolation boundary. Search results for an authenticated user must come only from the workspace in that token claim. An optional allowlist may restrict which workspace IDs can use the web UI at all.
 
 The Slack authorization request may include a `team` parameter to improve the login experience, but that is not an authorization boundary. The final decision must validate the token claim.
 
@@ -95,7 +95,7 @@ Implement or maintain Slack workspace login through Cognito Hosted UI.
 - Configure or maintain Slack as an external OIDC identity provider.
 - Configure protected web API routes to verify Cognito JWTs.
 - Store Slack OIDC client credentials outside Git. Keep the client secret in SSM Parameter Store SecureString, then pass it to SAM as a `NoEcho` parameter at deploy time because Cognito OIDC provider `client_secret` does not support SSM SecureString dynamic references.
-- Add environment/configuration for the allowed Slack workspace team ID.
+- Add optional environment/configuration for allowed Slack workspace team IDs.
 - Pass the deployed API base URL as `WebBaseUrl` so Cognito callback/logout URLs do not create a CloudFormation dependency cycle.
 
 ### Slack app settings
@@ -118,10 +118,12 @@ https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idp
 
 ### Authorization
 
-- Require the authenticated user's Slack `team_id` to match the configured allowed team ID.
+- Require an authenticated Slack `team_id` claim before searching.
+- Scope every search to the authenticated user's Slack `team_id`.
+- If an allowed-team list is configured, require the authenticated user's Slack `team_id` to be present in it.
 - Prefer enforcing this before issuing application access.
 - Validate the Slack team claim in the protected API handler. This avoids a CloudFormation dependency cycle between API Gateway, Cognito callback URLs, and the Cognito app client.
-- Deny users from other Slack workspaces.
+- Deny users with missing team claims or team claims outside the optional allowlist.
 
 ### Frontend behavior
 
@@ -145,10 +147,10 @@ This fallback is more code and should be used only after a small Cognito proof-o
 
 ## Acceptance criteria
 
-- A user from the allowed Slack workspace can sign in to the web UI.
-- A user from another Slack workspace is rejected.
+- A user with a valid Slack workspace claim can sign in to the web UI.
 - The API rejects unauthenticated requests.
-- The API rejects authenticated users whose Slack `team_id` does not match the configured workspace.
+- The API searches only messages whose `team_id` matches the authenticated user's Slack workspace claim.
+- If an allowlist is configured, the API rejects authenticated users whose Slack `team_id` is not in the allowlist.
 - No Slack Client Secret, bot token, signing secret, user token, or session secret is committed to Git.
 - Existing Slack Events API and `/hi-nick` slash command endpoints continue to use Slack request signature verification, not the web login flow.
 

@@ -110,7 +110,7 @@ After adding `chat:write` or `users:read`, reinstall or reauthorize the app and 
 aws ssm put-parameter \
   --profile <AWS_PROFILE> \
   --region ap-northeast-1 \
-  --name /slack-archiver/slack-bot-token \
+  --name /slack-archiver/workspaces/<TEAM_ID>/slack-bot-token \
   --type SecureString \
   --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
   --overwrite

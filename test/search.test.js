@@ -22,6 +22,7 @@ test('search handler invokes the worker and returns immediately', async () => {
   });
 
   const body = new URLSearchParams({
+    team_id: 'T123',
     channel_id: 'C123',
     user_id: 'U999',
     response_url: 'https://hooks.slack.test/response',
@@ -74,6 +75,7 @@ test('search worker posts a parent message and threaded hit details', async () =
 
   const response = await worker({
     body: {
+      team_id: 'T123',
       channel_id: 'C123',
       user_id: 'U999',
       response_url: 'https://hooks.slack.test/response',
@@ -101,7 +103,10 @@ test('search worker reports misses through response_url', async () => {
 
   const responses = [];
   const worker = createWorker({
-    getBotToken: async () => 'xoxb-token',
+    getBotToken: async ({ teamId }) => {
+      assert.equal(teamId, 'T123');
+      return 'xoxb-token';
+    },
     ddbSend: async () => ({ Items: [] }),
     slackPost: async () => {
       throw new Error('misses should not post channel messages');
@@ -113,6 +118,7 @@ test('search worker reports misses through response_url', async () => {
 
   const response = await worker({
     body: {
+      team_id: 'T123',
       response_url: 'https://hooks.slack.test/response',
       text: 'missing',
     },
@@ -142,6 +148,7 @@ test('search skips bot messages and continues to human results', async () => {
 
   const results = await searchMessages({
     query: 'needle',
+    teamId: 'T123',
     ddbSend: async (command) => {
       if (command.constructor.name === 'QueryCommand') {
         return {
@@ -176,6 +183,7 @@ test('search skips previously archived search result messages', async () => {
 
   const results = await searchMessages({
     query: 'needle',
+    teamId: 'T123',
     ddbSend: async (command) => {
       if (command.constructor.name === 'QueryCommand') {
         return {
@@ -194,6 +202,44 @@ test('search skips previously archived search result messages', async () => {
   });
 
   assert.deepEqual(results.map((item) => item.text), ['needle from human']);
+});
+
+test('search scopes index lookups and loaded messages to one Slack workspace', async () => {
+  process.env.SEARCH_INDEX_TABLE = 'index-table';
+  process.env.MESSAGES_TABLE = 'messages-table';
+
+  const sameWorkspace = message({ ts: '1710000006.000000', text: 'needle from allowed workspace' });
+  const otherWorkspace = {
+    ...message({ ts: '1710000007.000000', text: 'needle from other workspace' }),
+    pk: 'workspace#T_OTHER#channel#C123',
+    team_id: 'T_OTHER',
+  };
+  const messages = new Map([
+    [sameWorkspace.sk, sameWorkspace],
+    [otherWorkspace.sk, otherWorkspace],
+  ]);
+
+  const results = await searchMessages({
+    query: 'needle',
+    teamId: 'T123',
+    ddbSend: async (command) => {
+      if (command.constructor.name === 'QueryCommand') {
+        assert.equal(command.input.ExpressionAttributeValues[':pk'], 'workspace#T123#token#needle');
+        return {
+          Items: [
+            { team_id: 'T_OTHER', message_pk: otherWorkspace.pk, message_sk: otherWorkspace.sk },
+            { team_id: 'T123', message_pk: sameWorkspace.pk, message_sk: sameWorkspace.sk },
+          ],
+        };
+      }
+      if (command.constructor.name === 'GetCommand') {
+        return { Item: messages.get(command.input.Key.sk) };
+      }
+      throw new Error(`unexpected command: ${command.constructor.name}`);
+    },
+  });
+
+  assert.deepEqual(results.map((item) => item.text), ['needle from allowed workspace']);
 });
 
 test('loadMessageContext returns five previous messages, hit, and five following messages in order', async () => {

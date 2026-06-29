@@ -110,7 +110,7 @@ aws ssm put-parameter \
 aws ssm put-parameter \
   --profile <AWS_PROFILE> \
   --region ap-northeast-1 \
-  --name /slack-archiver/slack-bot-token \
+  --name /slack-archiver/workspaces/<TEAM_ID>/slack-bot-token \
   --type SecureString \
   --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
   --overwrite
@@ -153,7 +153,7 @@ The Web UI is now implemented. Maintain this authentication model:
 - Cognito User Pool Hosted UI for login.
 - Slack Sign in with Slack as the external OIDC provider.
 - Web API Lambda verifies Cognito JWTs.
-- Web API Lambda checks Slack's `team_id` claim against the configured workspace.
+- Web API Lambda scopes search to Slack's `team_id` claim from the logged-in user.
 - The frontend is currently served by API Gateway and Lambda at `/web`.
 
 Do not implement custom password storage.

@@ -87,7 +87,7 @@ These values are not stored in the repository and must be provided by the operat
 - Slack OIDC Client ID and Client Secret.
 - Slack app name and target workspace.
 - Whether private channels should be archived.
-- Slack workspace team ID for Web UI access control.
+- Slack workspace team IDs for optional Web UI access control.
 
 Secrets must not be committed to Git.
 
@@ -107,10 +107,10 @@ uv run sam deploy --guided
 Before deployment, store Slack secrets in SSM Parameter Store:
 
 - `/slack-archiver/slack-signing-secret`
-- `/slack-archiver/slack-bot-token`
+- `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token`
 - `/slack-archiver/slack-oidc-client-id`
 - `/slack-archiver/slack-oidc-client-secret`
-- `/slack-archiver/allowed-slack-team-id`
+- `/slack-archiver/allowed-slack-team-ids` (optional)
 - `/slack-archiver/cognito-domain-prefix`
 - `/slack-archiver/web-base-url`
 
@@ -118,4 +118,4 @@ Before deployment, store Slack secrets in SSM Parameter Store:
 
 Slack-facing endpoints use Slack request signature verification.
 
-The web app uses Cognito Hosted UI with Slack Sign in as an external OIDC provider. The Web API Lambda verifies Cognito JWTs and rejects users whose Slack `team_id` claim does not match the configured workspace. Do not implement custom password storage.
+The web app uses Cognito Hosted UI with Slack Sign in as an external OIDC provider. The Web API Lambda verifies Cognito JWTs and scopes every search to the Slack `team_id` claim from the logged-in user. If an allowed-team list is configured, users outside that list are rejected. Do not implement custom password storage.

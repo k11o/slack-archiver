@@ -9,19 +9,26 @@ const {
 
 const ssm = new SSMClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-let cachedBotToken;
+const botTokenCache = new Map();
 const userCache = new Map();
 const channelCache = new Map();
 let cachedJwks;
 
-async function getBotToken() {
-  if (cachedBotToken) return cachedBotToken;
+async function getBotToken({ teamId } = {}) {
+  const paramName = getBotTokenParamName(teamId);
+  if (botTokenCache.has(paramName)) return botTokenCache.get(paramName);
   const result = await ssm.send(new GetParameterCommand({
-    Name: process.env.SLACK_BOT_TOKEN_PARAM,
+    Name: paramName,
     WithDecryption: true,
   }));
-  cachedBotToken = result.Parameter.Value;
-  return cachedBotToken;
+  botTokenCache.set(paramName, result.Parameter.Value);
+  return result.Parameter.Value;
+}
+
+function getBotTokenParamName(teamId) {
+  if (!teamId) throw new Error('missing Slack team ID');
+  const prefix = process.env.SLACK_BOT_TOKEN_PARAM_PREFIX || '/slack-archiver/workspaces/';
+  return `${prefix.replace(/\/?$/, '/')}${teamId}/slack-bot-token`;
 }
 
 exports.page = async () => html(renderPage({
@@ -32,7 +39,7 @@ exports.page = async () => html(renderPage({
 }));
 
 function createSearchHandler({
-  allowedSlackTeamId,
+  allowedSlackTeamIds,
   getBotToken: loadBotToken,
   ddbSend,
   verifyAuth = verifyCognitoJwt,
@@ -48,24 +55,36 @@ function createSearchHandler({
       return json({ error: 'unauthorized' }, error.statusCode || 401);
     }
     const teamId = claims['custom:slack_team_id'] || claims['https://slack.com/team_id'];
-    if (!allowedSlackTeamId || teamId !== allowedSlackTeamId) {
+    if (!teamId || !isAllowedTeam({ teamId, allowedSlackTeamIds })) {
       return json({ error: 'forbidden_workspace' }, 403);
     }
 
     const query = String(event.queryStringParameters?.q || '').trim();
     if (!query) return json({ results: [] });
 
-    const botToken = await loadBotToken();
-    const hits = await search({ query, ddbSend });
+    const botToken = await loadBotToken({ teamId });
+    const hits = await search({ query, teamId, ddbSend });
 
     const results = [];
     for (const hit of hits) {
       const context = await loadContext({ message: hit, ddbSend });
-      results.push(await formatResult({ botToken, hit, context }));
+      results.push(await formatResult({ botToken, teamId, hit, context }));
     }
 
     return json({ results });
   };
+}
+
+function isAllowedTeam({ teamId, allowedSlackTeamIds }) {
+  const allowed = parseAllowedTeamIds(allowedSlackTeamIds);
+  return allowed.size === 0 || allowed.has(teamId);
+}
+
+function parseAllowedTeamIds(value) {
+  if (!value) return new Set();
+  if (value instanceof Set) return value;
+  if (Array.isArray(value)) return new Set(value.filter(Boolean));
+  return new Set(String(value).split(',').map((item) => item.trim()).filter(Boolean));
 }
 
 async function verifyCognitoJwt(event) {
@@ -87,9 +106,9 @@ async function verifyCognitoJwt(event) {
   }
 }
 
-async function formatWebResult({ botToken, hit, context }) {
-  const userNames = await loadUserNames({ botToken, messages: context });
-  const channelName = await resolveChannelName({ botToken, channelId: hit.channel_id });
+async function formatWebResult({ botToken, teamId, hit, context }) {
+  const userNames = await loadUserNames({ botToken, teamId, messages: context });
+  const channelName = await resolveChannelName({ botToken, teamId, channelId: hit.channel_id });
 
   return {
     channel_id: hit.channel_id,
@@ -112,7 +131,7 @@ async function formatWebResult({ botToken, hit, context }) {
   };
 }
 
-async function loadUserNames({ botToken, messages }) {
+async function loadUserNames({ botToken, teamId, messages }) {
   const ids = new Set();
   for (const message of messages) {
     if (message.user_id) ids.add(message.user_id);
@@ -123,14 +142,15 @@ async function loadUserNames({ botToken, messages }) {
 
   const entries = await Promise.all([...ids].map(async (userId) => [
     userId,
-    await resolveUserName({ botToken, userId }),
+    await resolveUserName({ botToken, teamId, userId }),
   ]));
   return new Map(entries);
 }
 
-async function resolveUserName({ botToken, userId }) {
+async function resolveUserName({ botToken, teamId, userId }) {
   if (!userId) return '(unknown user)';
-  if (userCache.has(userId)) return userCache.get(userId);
+  const cacheKey = `${teamId || ''}:${userId}`;
+  if (userCache.has(cacheKey)) return userCache.get(cacheKey);
 
   const payload = await slackApi({
     botToken,
@@ -145,13 +165,14 @@ async function resolveUserName({ botToken, userId }) {
     || payload.user?.name
     || userId;
   const sanitized = sanitizeDisplayName(name);
-  userCache.set(userId, sanitized);
+  userCache.set(cacheKey, sanitized);
   return sanitized;
 }
 
-async function resolveChannelName({ botToken, channelId }) {
+async function resolveChannelName({ botToken, teamId, channelId }) {
   if (!channelId) return '(unknown channel)';
-  if (channelCache.has(channelId)) return channelCache.get(channelId);
+  const cacheKey = `${teamId || ''}:${channelId}`;
+  if (channelCache.has(cacheKey)) return channelCache.get(cacheKey);
 
   const payload = await slackApi({
     botToken,
@@ -159,7 +180,7 @@ async function resolveChannelName({ botToken, channelId }) {
     params: { channel: channelId },
   });
   const name = payload.channel?.name ? `#${payload.channel.name}` : channelId;
-  channelCache.set(channelId, name);
+  channelCache.set(cacheKey, name);
   return name;
 }
 
@@ -403,7 +424,7 @@ exports.renderPage = renderPage;
 exports.createSearchHandler = createSearchHandler;
 exports.formatWebResult = formatWebResult;
 exports.search = createSearchHandler({
-  allowedSlackTeamId: process.env.ALLOWED_SLACK_TEAM_ID,
+  allowedSlackTeamIds: process.env.ALLOWED_SLACK_TEAM_IDS,
   getBotToken,
   ddbSend: (command) => ddb.send(command),
 });

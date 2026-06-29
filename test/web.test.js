@@ -2,9 +2,9 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createSearchHandler, renderPage } = require('../src/web/handler');
 
-test('web search rejects users from another Slack workspace', async () => {
+test('web search rejects users outside the optional Slack workspace allowlist', async () => {
   const handler = createSearchHandler({
-    allowedSlackTeamId: 'T_ALLOWED',
+    allowedSlackTeamIds: 'T_ALLOWED',
     getBotToken: async () => 'xoxb-token',
     ddbSend: async () => {
       throw new Error('forbidden requests should not hit DynamoDB');
@@ -18,15 +18,18 @@ test('web search rejects users from another Slack workspace', async () => {
   assert.deepEqual(JSON.parse(response.body), { error: 'forbidden_workspace' });
 });
 
-test('web search returns formatted hit context for allowed Slack workspace', async () => {
+test('web search scopes results to the logged-in Slack workspace', async () => {
   const hit = message({ ts: '1710000001.000000', text: 'hello world' });
   const handler = createSearchHandler({
-    allowedSlackTeamId: 'T_ALLOWED',
-    getBotToken: async () => 'xoxb-token',
+    getBotToken: async ({ teamId }) => {
+      assert.equal(teamId, 'T_LOGIN');
+      return 'xoxb-token';
+    },
     ddbSend: async () => null,
-    verifyAuth: async () => ({ 'custom:slack_team_id': 'T_ALLOWED' }),
-    search: async ({ query }) => {
+    verifyAuth: async () => ({ 'custom:slack_team_id': 'T_LOGIN' }),
+    search: async ({ query, teamId }) => {
       assert.equal(query, 'hello');
+      assert.equal(teamId, 'T_LOGIN');
       return [hit];
     },
     loadContext: async () => [hit],
@@ -50,7 +53,7 @@ test('web search returns formatted hit context for allowed Slack workspace', asy
 
 test('web search returns unauthorized when token verification fails', async () => {
   const handler = createSearchHandler({
-    allowedSlackTeamId: 'T_ALLOWED',
+    allowedSlackTeamIds: 'T_ALLOWED',
     getBotToken: async () => 'xoxb-token',
     ddbSend: async () => {
       throw new Error('unauthorized requests should not hit DynamoDB');

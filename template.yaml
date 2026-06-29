@@ -11,9 +11,10 @@ Parameters:
     Type: String
     Description: Slack Sign in with Slack OIDC client secret for the web UI.
     NoEcho: true
-  AllowedSlackTeamId:
+  AllowedSlackTeamIds:
     Type: String
-    Description: Slack workspace team ID allowed to access the web UI.
+    Default: ''
+    Description: Optional comma-separated Slack workspace team IDs allowed to access the web UI. Leave empty to allow any Slack-authenticated workspace and scope search by the user's team ID.
   CognitoDomainPrefix:
     Type: String
     Description: Globally unique Cognito Hosted UI domain prefix.
@@ -33,7 +34,7 @@ Globals:
         MESSAGES_TABLE: !Ref MessagesTable
         SEARCH_INDEX_TABLE: !Ref SearchIndexTable
         SLACK_SIGNING_SECRET_PARAM: /slack-archiver/slack-signing-secret
-        SLACK_BOT_TOKEN_PARAM: /slack-archiver/slack-bot-token
+        SLACK_BOT_TOKEN_PARAM_PREFIX: /slack-archiver/workspaces/
 
 Resources:
   Api:
@@ -92,7 +93,7 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref SearchIndexTable
         - SSMParameterReadPolicy:
-            ParameterName: slack-archiver/slack-bot-token
+            ParameterName: slack-archiver/workspaces/*/slack-bot-token
 
   WebFunction:
     Type: AWS::Serverless::Function
@@ -127,7 +128,7 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
-          ALLOWED_SLACK_TEAM_ID: !Ref AllowedSlackTeamId
+          ALLOWED_SLACK_TEAM_IDS: !Ref AllowedSlackTeamIds
           COGNITO_ISSUER: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${WebUserPool}'
           COGNITO_CLIENT_ID: !Ref WebUserPoolClient
       Policies:
@@ -136,7 +137,7 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref SearchIndexTable
         - SSMParameterReadPolicy:
-            ParameterName: slack-archiver/slack-bot-token
+            ParameterName: slack-archiver/workspaces/*/slack-bot-token
       Events:
         WebSearch:
           Type: HttpApi

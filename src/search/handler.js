@@ -10,7 +10,7 @@ const ssm = new SSMClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
 let cachedSigningSecret;
-let cachedBotToken;
+const botTokenCache = new Map();
 const userCache = new Map();
 
 const MAX_QUERY_TOKENS = 5;
@@ -29,14 +29,21 @@ async function getSigningSecret() {
   return cachedSigningSecret;
 }
 
-async function getBotToken() {
-  if (cachedBotToken) return cachedBotToken;
+async function getBotToken({ teamId } = {}) {
+  const paramName = getBotTokenParamName(teamId);
+  if (botTokenCache.has(paramName)) return botTokenCache.get(paramName);
   const result = await ssm.send(new GetParameterCommand({
-    Name: process.env.SLACK_BOT_TOKEN_PARAM,
+    Name: paramName,
     WithDecryption: true,
   }));
-  cachedBotToken = result.Parameter.Value;
-  return cachedBotToken;
+  botTokenCache.set(paramName, result.Parameter.Value);
+  return result.Parameter.Value;
+}
+
+function getBotTokenParamName(teamId) {
+  if (!teamId) throw new Error('missing Slack team ID');
+  const prefix = process.env.SLACK_BOT_TOKEN_PARAM_PREFIX || '/slack-archiver/workspaces/';
+  return `${prefix.replace(/\/?$/, '/')}${teamId}/slack-bot-token`;
 }
 
 async function postSlackMessage({ botToken, message }) {
@@ -117,7 +124,8 @@ function createWorker({ getBotToken: loadBotToken, ddbSend, slackPost, slackUser
   return async (event) => {
     const body = event.body || {};
     const query = normalizeText(body.text || '');
-    const hits = await searchMessages({ query, ddbSend });
+    const teamId = body.team_id;
+    const hits = await searchMessages({ query, teamId, ddbSend });
     if (!hits.length) {
       await responsePost({
         responseUrl: body.response_url,
@@ -126,7 +134,7 @@ function createWorker({ getBotToken: loadBotToken, ddbSend, slackPost, slackUser
       return empty();
     }
 
-    const botToken = await loadBotToken();
+    const botToken = await loadBotToken({ teamId });
     const requesterName = await resolveUserName({ botToken, userId: body.user_id, slackUserInfo });
     const parent = await slackPost({
       botToken,
@@ -170,20 +178,22 @@ async function postResponseUrl({ responseUrl, body }) {
   return response;
 }
 
-async function searchMessages({ query, ddbSend }) {
+async function searchMessages({ query, teamId, ddbSend }) {
   const tokens = tokenize(query).slice(0, MAX_QUERY_TOKENS);
+  if (!teamId || !tokens.length) return [];
   const candidates = new Map();
 
   for (const token of tokens) {
     const result = await ddbSend(new QueryCommand({
       TableName: process.env.SEARCH_INDEX_TABLE,
       KeyConditionExpression: 'pk = :pk',
-      ExpressionAttributeValues: { ':pk': `token#${token}` },
+      ExpressionAttributeValues: { ':pk': `workspace#${teamId}#token#${token}` },
       ScanIndexForward: false,
       Limit: 25,
     }));
 
     for (const item of result.Items || []) {
+      if (item.team_id && item.team_id !== teamId) continue;
       const key = `${item.message_pk}|${item.message_sk}`;
       const candidate = candidates.get(key) || { pk: item.message_pk, sk: item.message_sk, score: 0 };
       candidate.score += 1;
@@ -200,7 +210,9 @@ async function searchMessages({ query, ddbSend }) {
       TableName: process.env.MESSAGES_TABLE,
       Key: { pk: candidate.pk, sk: candidate.sk },
     }));
-    if (result.Item && isSearchableMessage(result.Item, query)) messages.push(result.Item);
+    if (result.Item && result.Item.team_id === teamId && isSearchableMessage(result.Item, query)) {
+      messages.push(result.Item);
+    }
     if (messages.length >= MAX_HITS) break;
   }
   return messages;
