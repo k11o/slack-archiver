@@ -113,11 +113,11 @@ jobs:
             --query 'Parameter.Value' \
             --output text)
 
-          ALLOWED_SLACK_TEAM_ID=$(aws ssm get-parameter \
+          ALLOWED_SLACK_TEAM_IDS=$(aws ssm get-parameter \
             --region "$AWS_DEFAULT_REGION" \
-            --name /slack-archiver/allowed-slack-team-id \
+            --name /slack-archiver/allowed-slack-team-ids \
             --query 'Parameter.Value' \
-            --output text)
+            --output text 2>/dev/null || true)
 
           COGNITO_DOMAIN_PREFIX=$(aws ssm get-parameter \
             --region "$AWS_DEFAULT_REGION" \
@@ -141,6 +141,6 @@ jobs:
             --parameter-overrides \
               SlackOidcClientId="$SLACK_OIDC_CLIENT_ID" \
               SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
-              AllowedSlackTeamId="$ALLOWED_SLACK_TEAM_ID" \
+              AllowedSlackTeamIds="$ALLOWED_SLACK_TEAM_IDS" \
               CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
               WebBaseUrl="$WEB_BASE_URL"

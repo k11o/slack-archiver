@@ -1,6 +1,33 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createSearchHandler, renderPage } = require('../src/web/handler');
+const { createSearchHandler, renderPage, resolveTeamId } = require('../src/web/handler');
+
+test('resolveTeamId accepts the namespaced team_id claim', () => {
+  assert.equal(resolveTeamId({ 'https://slack.com/team_id': 'T_NS' }), 'T_NS');
+});
+
+test('resolveTeamId accepts the custom team_id claim', () => {
+  assert.equal(resolveTeamId({ 'custom:slack_team_id': 'T_CUSTOM' }), 'T_CUSTOM');
+});
+
+test('resolveTeamId returns the team id when both claims agree', () => {
+  assert.equal(resolveTeamId({
+    'custom:slack_team_id': 'T_SAME',
+    'https://slack.com/team_id': 'T_SAME',
+  }), 'T_SAME');
+});
+
+test('resolveTeamId rejects mismatched team claims', () => {
+  assert.equal(resolveTeamId({
+    'custom:slack_team_id': 'T_ONE',
+    'https://slack.com/team_id': 'T_TWO',
+  }), null);
+});
+
+test('resolveTeamId returns null when no team claim is present', () => {
+  assert.equal(resolveTeamId({}), null);
+  assert.equal(resolveTeamId({ email: 'user@example.com' }), null);
+});
 
 test('web search rejects users outside the optional Slack workspace allowlist', async () => {
   const handler = createSearchHandler({
@@ -49,6 +76,55 @@ test('web search scopes results to the logged-in Slack workspace', async () => {
   assert.equal(body.results.length, 1);
   assert.equal(body.results[0].channel_name, '#general');
   assert.equal(body.results[0].user_name, 'alice');
+});
+
+test('web search scopes results using the namespaced team_id claim', async () => {
+  const hit = message({ ts: '1710000001.000000', text: 'hello world' });
+  const handler = createSearchHandler({
+    getBotToken: async ({ teamId }) => {
+      assert.equal(teamId, 'T_NS');
+      return 'xoxb-token';
+    },
+    ddbSend: async () => null,
+    verifyAuth: async () => ({ 'https://slack.com/team_id': 'T_NS' }),
+    search: async ({ query, teamId }) => {
+      assert.equal(query, 'hello');
+      assert.equal(teamId, 'T_NS');
+      return [hit];
+    },
+    loadContext: async () => [hit],
+    formatResult: async ({ context }) => ({
+      channel_name: '#general',
+      user_name: 'alice',
+      time: '2024-03-09T16:00:01.000Z',
+      text: 'hello world',
+      context,
+    }),
+  });
+
+  const response = await handler(eventWithQuery({ q: 'hello' }));
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).results.length, 1);
+});
+
+test('web search rejects mismatched team claims before any DynamoDB call', async () => {
+  const handler = createSearchHandler({
+    getBotToken: async () => {
+      throw new Error('mismatched claims should not load a bot token');
+    },
+    ddbSend: async () => {
+      throw new Error('mismatched claims should not hit DynamoDB');
+    },
+    verifyAuth: async () => ({
+      'custom:slack_team_id': 'T_ONE',
+      'https://slack.com/team_id': 'T_TWO',
+    }),
+  });
+
+  const response = await handler(eventWithQuery({ q: 'hello' }));
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(JSON.parse(response.body), { error: 'forbidden_workspace' });
 });
 
 test('web search returns unauthorized when token verification fails', async () => {

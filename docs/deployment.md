@@ -251,6 +251,8 @@ Before or immediately after deploy:
 
 The first version is a scaffold, not a hardened production release.
 
+Multi-tenant migration note: the `slack_search_index` partition key changed from `token#{token}` to `workspace#{team_id}#token#{token}`. After deploying the multi-tenant code, existing index entries no longer match searches. Run the one-time backfill in `docs/backfill.md` (`scripts/backfill-search-index.js`) to rebuild the index from `slack_messages` before cleaning up legacy entries.
+
 Known follow-up tasks:
 
 - Add explicit CloudWatch log retention resources.

@@ -38,6 +38,13 @@ exports.page = async () => html(renderPage({
   searchUrl: process.env.WEB_SEARCH_URL,
 }));
 
+function resolveTeamId(claims) {
+  const custom = claims['custom:slack_team_id'];
+  const namespaced = claims['https://slack.com/team_id'];
+  if (custom && namespaced && custom !== namespaced) return null;
+  return custom || namespaced || null;
+}
+
 function createSearchHandler({
   allowedSlackTeamIds,
   getBotToken: loadBotToken,
@@ -54,7 +61,7 @@ function createSearchHandler({
     } catch (error) {
       return json({ error: 'unauthorized' }, error.statusCode || 401);
     }
-    const teamId = claims['custom:slack_team_id'] || claims['https://slack.com/team_id'];
+    const teamId = resolveTeamId(claims);
     if (!teamId || !isAllowedTeam({ teamId, allowedSlackTeamIds })) {
       return json({ error: 'forbidden_workspace' }, 403);
     }
@@ -423,6 +430,7 @@ function json(body, statusCode = 200) {
 exports.renderPage = renderPage;
 exports.createSearchHandler = createSearchHandler;
 exports.formatWebResult = formatWebResult;
+exports.resolveTeamId = resolveTeamId;
 exports.search = createSearchHandler({
   allowedSlackTeamIds: process.env.ALLOWED_SLACK_TEAM_IDS,
   getBotToken,
