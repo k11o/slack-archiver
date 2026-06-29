@@ -21,14 +21,6 @@ Parameters:
   WebBaseUrl:
     Type: String
     Description: Public API Gateway base URL that serves the web UI, for example https://example.execute-api.ap-northeast-1.amazonaws.com.
-  SlackAppClientId:
-    Type: String
-    Description: Slack app Client ID (Basic Information > App Credentials) used for bot install OAuth exchange.
-    NoEcho: true
-  SlackAppClientSecret:
-    Type: String
-    Description: Slack app Client Secret (Basic Information > App Credentials) used for bot install OAuth exchange.
-    NoEcho: true
 
 Globals:
   Function:
@@ -111,8 +103,8 @@ Resources:
       Timeout: 15
       Environment:
         Variables:
-          SLACK_APP_CLIENT_ID: !Ref SlackAppClientId
-          SLACK_APP_CLIENT_SECRET: !Ref SlackAppClientSecret
+          SLACK_APP_CLIENT_ID: !Ref SlackOidcClientId
+          SLACK_APP_CLIENT_SECRET: !Ref SlackOidcClientSecret
           SLACK_INSTALL_REDIRECT_URI: !Sub '${WebBaseUrl}/slack/install'
           SLACK_BOT_TOKEN_PARAM_PREFIX: /slack-archiver/workspaces/
       Policies:
