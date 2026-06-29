@@ -131,6 +131,19 @@ jobs:
             --query 'Parameter.Value' \
             --output text)
 
+          SLACK_APP_CLIENT_ID=$(aws ssm get-parameter \
+            --region "$AWS_DEFAULT_REGION" \
+            --name /slack-archiver/slack-app-client-id \
+            --query 'Parameter.Value' \
+            --output text)
+
+          SLACK_APP_CLIENT_SECRET=$(aws ssm get-parameter \
+            --region "$AWS_DEFAULT_REGION" \
+            --with-decryption \
+            --name /slack-archiver/slack-app-client-secret \
+            --query 'Parameter.Value' \
+            --output text)
+
           uv run sam deploy \
             --stack-name "$STACK_NAME" \
             --region "$AWS_DEFAULT_REGION" \
@@ -143,4 +156,6 @@ jobs:
               SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
               AllowedSlackTeamIds="$ALLOWED_SLACK_TEAM_IDS" \
               CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
-              WebBaseUrl="$WEB_BASE_URL"
+              WebBaseUrl="$WEB_BASE_URL" \
+              SlackAppClientId="$SLACK_APP_CLIENT_ID" \
+              SlackAppClientSecret="$SLACK_APP_CLIENT_SECRET"
