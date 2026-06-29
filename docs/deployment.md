@@ -11,9 +11,9 @@ These values are intentionally not committed to the repository.
 | AWS account ID | AWS console or `aws sts get-caller-identity` | Local deploy notes only |
 | AWS region | Deployment decision | `sam deploy --region` |
 | Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString |
-| Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token for each installed workspace | SSM Parameter Store SecureString under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` |
-| Slack OIDC client ID | Slack app settings: Sign in with Slack / OAuth | SAM parameter `SlackOidcClientId` |
-| Slack OIDC client secret | Slack app settings: Sign in with Slack / OAuth | SSM Parameter Store SecureString, then SAM parameter `SlackOidcClientSecret` at deploy time |
+| Slack app client ID / OIDC client ID | Slack app settings: Basic Information > App Credentials (same value used for Sign in with Slack) | SSM Parameter Store SecureString `/slack-archiver/slack-oidc-client-id`, then SAM parameter `SlackOidcClientId` at deploy time |
+| Slack app client secret / OIDC client secret | Slack app settings: Basic Information > App Credentials (same value used for Sign in with Slack) | SSM Parameter Store SecureString `/slack-archiver/slack-oidc-client-secret`, then SAM parameter `SlackOidcClientSecret` at deploy time |
+| Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token for each installed workspace | SSM Parameter Store SecureString under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` (written automatically by `InstallFunction` on install) |
 | Allowed Slack workspace team IDs | Slack workspace/app metadata | Optional SAM parameter `AllowedSlackTeamIds`, comma-separated |
 | Cognito domain prefix | Deployment decision | SAM parameter `CognitoDomainPrefix` |
 | Web base URL | Existing API endpoint | SAM parameter `WebBaseUrl` |

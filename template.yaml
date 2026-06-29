@@ -95,6 +95,33 @@ Resources:
         - SSMParameterReadPolicy:
             ParameterName: slack-archiver/workspaces/*/slack-bot-token
 
+  InstallFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/install/handler.main
+      Timeout: 15
+      Environment:
+        Variables:
+          SLACK_APP_CLIENT_ID: !Ref SlackOidcClientId
+          SLACK_APP_CLIENT_SECRET: !Ref SlackOidcClientSecret
+          SLACK_INSTALL_REDIRECT_URI: !Sub '${WebBaseUrl}/slack/install'
+          SLACK_BOT_TOKEN_PARAM_PREFIX: /slack-archiver/workspaces/
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ssm:PutParameter
+                - ssm:GetParameter
+              Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/slack-archiver/workspaces/*'
+      Events:
+        SlackInstall:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /slack/install
+            Method: GET
+
   WebFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -261,5 +288,8 @@ Outputs:
     Description: Web search UI URL
     Value: !Sub '${WebBaseUrl}/web'
   CognitoSlackCallbackUrl:
-    Description: Slack OIDC redirect URL to configure in the Slack app
+    Description: Slack OIDC redirect URL to configure in the Slack app for Web UI login
     Value: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse'
+  SlackInstallRedirectUrl:
+    Description: Redirect URL to configure in the Slack app OAuth & Permissions for bot install from the Manage Distribution page
+    Value: !Sub '${WebBaseUrl}/slack/install'

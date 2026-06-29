@@ -45,7 +45,9 @@ uv run sam deploy \
 - Never commit Slack secrets or tokens.
 - Required SSM SecureString parameters:
   - `/slack-archiver/slack-signing-secret` (shared across workspaces)
-  - `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` (one per installed Slack workspace)
+  - `/slack-archiver/slack-oidc-client-id` (Slack app Client ID, shared by OIDC login and bot install OAuth exchange)
+  - `/slack-archiver/slack-oidc-client-secret` (Slack app Client Secret, shared by OIDC login and bot install OAuth exchange)
+  - `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` (one per installed Slack workspace; written automatically by `InstallFunction` on install)
 - Optional SSM parameter for Web UI access control:
   - `/slack-archiver/allowed-slack-team-ids` (comma-separated; when absent, any Slack-authenticated workspace can use the Web UI and searches are scoped by the user's team ID claim)
 

@@ -6,7 +6,16 @@ This project uses Slack HTTP endpoints, not Socket Mode.
 
 Create a single Slack app and install it into each workspace that should be archived. The same Signing Secret and OIDC client credentials are shared across workspaces; only the Bot User OAuth Token differs per workspace, stored under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token`.
 
-For multi-workspace installations, keep the app configured as a distributable app (Settings > Manage Distribution) so it can be installed into additional workspaces with "Install to another workspace". The app-level settings (slash command, Event Subscriptions request URL, OAuth scopes, OIDC Redirect URL) are shared, so per-workspace reconfiguration is not needed. Slack includes `team_id` in every Events API and slash command payload, which the Lambda uses to scope storage and look up the correct bot token.
+For multi-workspace installations, keep the app configured as a distributable app (Settings > Manage Distribution) so it can be installed into additional workspaces. The app-level settings (slash command, Event Subscriptions request URL, OAuth scopes) are shared, so per-workspace reconfiguration is not needed. Slack includes `team_id` in every Events API and slash command payload, which the Lambda uses to scope storage and look up the correct bot token.
+
+### Redirect URLs
+
+The app needs two redirect URLs in **OAuth & Permissions > Redirect URLs**, each used by a different OAuth flow:
+
+1. **Bot install redirect URL**: `<API_ENDPOINT>/slack/install` — used by the "Install to another workspace" flow from Manage Distribution. After install approval, Slack redirects here with a `code`; the `InstallFunction` Lambda exchanges it via `oauth.v2.access` and stores the resulting bot token in SSM under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token`.
+2. **Web UI OIDC redirect URL**: `https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse` — used by Cognito Hosted UI for "Sign in with Slack".
+
+Both URLs must be registered. Manage Distribution requires at least one redirect URL; the bot install URL above satisfies that. Do NOT remove the Cognito `/oauth2/idpresponse` URL, otherwise Web UI login breaks. If Slack shows `redirect_uri did not match any configured URIs`, add the missing URL above to **OAuth & Permissions > Redirect URLs** and save it.
 
 ## Basic Information
 
@@ -120,16 +129,17 @@ aws ssm put-parameter \
 
 ### Add a new workspace
 
-Repeat these steps for each additional Slack workspace to archive:
+After the app is configured as distributable and the two redirect URLs above are registered, installing into another workspace is automatic:
 
-1. Open the app's "Install to another workspace" flow and install it into the target workspace.
-2. After install, copy that workspace's Bot User OAuth Token from OAuth & Permissions.
-3. Store the token in SSM under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` using the command above.
-4. Invite the app to each public channel that should be archived (see Channel coverage below).
-5. (Optional) If `/slack-archiver/allowed-slack-team-ids` is configured for Web UI access control, append the new `<TEAM_ID>` to the comma-separated list and redeploy.
-6. Verify with `/hi-nick <test word>` in the new workspace and a Web UI search signed in as a user from that workspace.
+1. Open **Manage Distribution** in the Slack app settings and use the "Install to another workspace" (or Add to Slack) button.
+2. The user approves the install in the target workspace.
+3. Slack redirects to `<API_ENDPOINT>/slack/install` with a `code`. The `InstallFunction` Lambda exchanges it via `oauth.v2.access`, receives a bot token and `team_id`, and stores the token in SSM under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token`.
+4. The Lambda returns a success page. No manual SSM `put-parameter` is needed.
+5. Invite the app to each public channel that should be archived (see Channel coverage below).
+6. (Optional) If `/slack-archiver/allowed-slack-team-ids` is configured for Web UI access control, append the new `<TEAM_ID>` to the comma-separated list and redeploy.
+7. Verify with `/hi-nick <test word>` in the new workspace and a Web UI search signed in as a user from that workspace.
 
-No code or SAM redeploy is needed for step 1-4; the running Lambda reads the new SSM parameter on the next request.
+No manual SSM put-parameter or SAM redeploy is needed for install steps 1-4; the running Lambda writes the new SSM parameter at install time.
 
 ## Channel coverage
 
@@ -167,7 +177,7 @@ Redirect URL: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.
 Web URL: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
 ```
 
-Configure this redirect URL only in the **Sign in with Slack** settings of the Slack app (in some app versions, it may appear under **User Info & OAuth > Redirect URLs** or similar). Do NOT add it to the separate **OAuth & Permissions > Redirect URLs** used for bot token installs. Putting the Cognito `/oauth2/idpresponse` URL in both places makes the bot install flow from the Manage Distribution page redirect to Cognito, which rejects the request with "Invalid state" because bot installs do not send a `state` parameter. Do not use the Web UI callback URL (`/web/callback`) as the Slack redirect URL.
+The Cognito `/oauth2/idpresponse` URL must be registered in **OAuth & Permissions > Redirect URLs** of the Slack app exactly as Cognito sends it, alongside the bot install redirect URL described above. Do not use the Web UI callback URL (`/web/callback`) as the Slack redirect URL.
 
 Store the Slack OIDC Client Secret in SSM Parameter Store as `/slack-archiver/slack-oidc-client-secret`.
 
