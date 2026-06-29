@@ -4,7 +4,9 @@ This project uses Slack HTTP endpoints, not Socket Mode.
 
 ## Create or configure the Slack app
 
-Create a Slack app for the target workspace. Keep the app internal to the workspace unless there is a later need to distribute it.
+Create a single Slack app and install it into each workspace that should be archived. The same Signing Secret and OIDC client credentials are shared across workspaces; only the Bot User OAuth Token differs per workspace, stored under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token`.
+
+For multi-workspace installations, keep the app configured as a distributable app (Settings > Manage Distribution) so it can be installed into additional workspaces with "Install to another workspace". The app-level settings (slash command, Event Subscriptions request URL, OAuth scopes, OIDC Redirect URL) are shared, so per-workspace reconfiguration is not needed. Slack includes `team_id` in every Events API and slash command payload, which the Lambda uses to scope storage and look up the correct bot token.
 
 ## Basic Information
 
@@ -102,19 +104,32 @@ Suggested Slack form values:
 
 ## Install the app
 
-Install the app to the workspace after scopes are configured. If scopes are changed later, reinstall or reauthorize the app.
+Install the app to each workspace after scopes are configured. If scopes are changed later, reinstall or reauthorize the app in every installed workspace.
 
-After adding `chat:write` or `users:read`, reinstall or reauthorize the app and copy the new Bot User OAuth Token to SSM:
+After adding `chat:write` or `users:read`, reinstall or reauthorize the app and copy the new Bot User OAuth Token to SSM. One SSM parameter is required per installed workspace, keyed by the Slack team ID:
 
 ```bash
 aws ssm put-parameter \
   --profile <AWS_PROFILE> \
   --region ap-northeast-1 \
-  --name /slack-archiver/slack-bot-token \
+  --name /slack-archiver/workspaces/<TEAM_ID>/slack-bot-token \
   --type SecureString \
   --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
   --overwrite
 ```
+
+### Add a new workspace
+
+Repeat these steps for each additional Slack workspace to archive:
+
+1. Open the app's "Install to another workspace" flow and install it into the target workspace.
+2. After install, copy that workspace's Bot User OAuth Token from OAuth & Permissions.
+3. Store the token in SSM under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` using the command above.
+4. Invite the app to each public channel that should be archived (see Channel coverage below).
+5. (Optional) If `/slack-archiver/allowed-slack-team-ids` is configured for Web UI access control, append the new `<TEAM_ID>` to the comma-separated list and redeploy.
+6. Verify with `/hi-nick <test word>` in the new workspace and a Web UI search signed in as a user from that workspace.
+
+No code or SAM redeploy is needed for step 1-4; the running Lambda reads the new SSM parameter on the next request.
 
 ## Channel coverage
 

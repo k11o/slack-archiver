@@ -37,7 +37,7 @@ Web API Lambda verifies Cognito JWT
 Search Lambda
 ```
 
-Use Slack Sign in with Slack as the external OIDC provider for Cognito so that web users authenticate with the target Slack workspace account. See `docs/web-auth-slack-oidc.md` for the implementation task.
+Use Slack Sign in with Slack as the external OIDC provider for Cognito so that web users authenticate with a Slack workspace account. See `docs/web-auth-slack-oidc.md` for the implementation task.
 
 ### Why Cognito
 
@@ -48,9 +48,10 @@ Use Slack Sign in with Slack as the external OIDC provider for Cognito so that w
 
 ### User access policy
 
-Start with an allowlist:
+Start with workspace-scoped access:
 
-- Restrict access to the configured Slack workspace by validating Slack's `https://slack.com/team_id` OIDC claim.
+- Validate Slack's `https://slack.com/team_id` OIDC claim and scope search results to that workspace.
+- Keep an optional allowlist for restricting which Slack workspace IDs can use the web UI.
 - Disable open Cognito-native self-signup unless it is explicitly needed later.
 - Use read-only API permissions for the initial web UI.
 
@@ -74,4 +75,4 @@ This is the lowest-risk first release. If search through Slack is enough, skip t
 
 ## Initial decision
 
-Implement Slack slash command search first. The Web UI now uses Cognito User Pool Hosted UI with Slack as an external OIDC provider. The protected Web API verifies Cognito JWTs in Lambda and checks the Slack workspace claim there, which avoids a CloudFormation dependency cycle between API Gateway routes, Cognito callback URLs, and the Cognito app client.
+Implement Slack slash command search first. The Web UI now uses Cognito User Pool Hosted UI with Slack as an external OIDC provider. The protected Web API verifies Cognito JWTs in Lambda and uses the Slack workspace claim as the search scope, which avoids a CloudFormation dependency cycle between API Gateway routes, Cognito callback URLs, and the Cognito app client.

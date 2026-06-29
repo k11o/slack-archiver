@@ -11,10 +11,10 @@ These values are intentionally not committed to the repository.
 | AWS account ID | AWS console or `aws sts get-caller-identity` | Local deploy notes only |
 | AWS region | Deployment decision | `sam deploy --region` |
 | Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString |
-| Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token | SSM Parameter Store SecureString |
+| Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token for each installed workspace | SSM Parameter Store SecureString under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` |
 | Slack OIDC client ID | Slack app settings: Sign in with Slack / OAuth | SAM parameter `SlackOidcClientId` |
 | Slack OIDC client secret | Slack app settings: Sign in with Slack / OAuth | SSM Parameter Store SecureString, then SAM parameter `SlackOidcClientSecret` at deploy time |
-| Slack workspace team ID | Slack workspace/app metadata | SAM parameter `AllowedSlackTeamId` |
+| Allowed Slack workspace team IDs | Slack workspace/app metadata | Optional SAM parameter `AllowedSlackTeamIds`, comma-separated |
 | Cognito domain prefix | Deployment decision | SAM parameter `CognitoDomainPrefix` |
 | Web base URL | Existing API endpoint | SAM parameter `WebBaseUrl` |
 | Slack app request URLs | SAM stack output `ApiEndpoint` | Slack app settings |
@@ -55,7 +55,7 @@ aws ssm put-parameter \
 aws ssm put-parameter \
   --profile <AWS_PROFILE> \
   --region ap-northeast-1 \
-  --name /slack-archiver/slack-bot-token \
+  --name /slack-archiver/workspaces/<TEAM_ID>/slack-bot-token \
   --type SecureString \
   --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \
   --overwrite
@@ -141,12 +141,12 @@ SLACK_OIDC_CLIENT_SECRET=$(aws ssm get-parameter \
   --query 'Parameter.Value' \
   --output text)
 
-ALLOWED_SLACK_TEAM_ID=$(aws ssm get-parameter \
+ALLOWED_SLACK_TEAM_IDS=$(aws ssm get-parameter \
   --profile <AWS_PROFILE> \
   --region ap-northeast-1 \
-  --name /slack-archiver/allowed-slack-team-id \
+  --name /slack-archiver/allowed-slack-team-ids \
   --query 'Parameter.Value' \
-  --output text)
+  --output text 2>/dev/null || true)
 
 COGNITO_DOMAIN_PREFIX=$(aws ssm get-parameter \
   --profile <AWS_PROFILE> \
@@ -171,7 +171,7 @@ uv run sam deploy \
   --parameter-overrides \
     SlackOidcClientId="$SLACK_OIDC_CLIENT_ID" \
     SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
-    AllowedSlackTeamId="$ALLOWED_SLACK_TEAM_ID" \
+    AllowedSlackTeamIds="$ALLOWED_SLACK_TEAM_IDS" \
     CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
     WebBaseUrl="$WEB_BASE_URL"
 ```
@@ -212,7 +212,7 @@ Region: ap-northeast-1
 ApiEndpoint: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com
 WebUrl: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
 CognitoSlackCallbackUrl: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
-AllowedSlackTeamId: <ALLOWED_SLACK_TEAM_ID>
+AllowedSlackTeamIds: <ALLOWED_SLACK_TEAM_IDS>
 ```
 
 ## Smoke tests
@@ -250,6 +250,8 @@ Before or immediately after deploy:
 ## Current implementation caveats
 
 The first version is a scaffold, not a hardened production release.
+
+Multi-tenant migration note: the `slack_search_index` partition key changed from `token#{token}` to `workspace#{team_id}#token#{token}`. After deploying the multi-tenant code, existing index entries no longer match searches. Run the one-time backfill in `docs/backfill.md` (`scripts/backfill-search-index.js`) to rebuild the index from `slack_messages` before cleaning up legacy entries.
 
 Known follow-up tasks:
 

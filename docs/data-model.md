@@ -24,14 +24,15 @@ Primary access pattern: fetch messages by workspace/channel and timestamp.
 
 ## Table: slack_search_index
 
-Primary access pattern: token to candidate messages.
+Primary access pattern: workspace-scoped token to candidate messages.
 
 | Attribute | Purpose |
 |---|---|
-| pk | `token#{token}` |
+| pk | `workspace#{team_id}#token#{token}` |
 | sk | `workspace#{team_id}#channel#{channel_id}#ts#{message_ts}` |
 | message_pk | PK for `slack_messages`. |
 | message_sk | SK for `slack_messages`. |
+| team_id | Slack workspace/team ID. |
 | token | Normalized token or n-gram. |
 | ts | Slack message timestamp. |
 
