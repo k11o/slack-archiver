@@ -167,7 +167,7 @@ Redirect URL: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.
 Web URL: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
 ```
 
-The Slack redirect URL must match exactly. If Slack shows `redirect_uri did not match any configured URIs`, add the Cognito `/oauth2/idpresponse` URL above to **OAuth & Permissions > Redirect URLs** and save it. Do not use the Web UI callback URL (`/web/callback`) as the Slack redirect URL.
+Configure this redirect URL only in the **Sign in with Slack** settings of the Slack app (in some app versions, it may appear under **User Info & OAuth > Redirect URLs** or similar). Do NOT add it to the separate **OAuth & Permissions > Redirect URLs** used for bot token installs. Putting the Cognito `/oauth2/idpresponse` URL in both places makes the bot install flow from the Manage Distribution page redirect to Cognito, which rejects the request with "Invalid state" because bot installs do not send a `state` parameter. Do not use the Web UI callback URL (`/web/callback`) as the Slack redirect URL.
 
 Store the Slack OIDC Client Secret in SSM Parameter Store as `/slack-archiver/slack-oidc-client-secret`.
 

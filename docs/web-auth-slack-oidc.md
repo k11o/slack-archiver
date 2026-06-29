@@ -101,18 +101,19 @@ Implement or maintain Slack workspace login through Cognito Hosted UI.
 ### Slack app settings
 
 - Enable Sign in with Slack / OIDC for the app.
-- Add the Cognito callback URL:
+- Add the Cognito callback URL in the **Sign in with Slack** redirect URL settings of the Slack app:
 
 ```text
 https://<cognito-domain>/oauth2/idpresponse
 ```
 
-- The redirect URL must be registered in Slack OAuth & Permissions exactly as Cognito sends it. For the current development stack, use:
+- The redirect URL must be registered in the Sign in with Slack section exactly as Cognito sends it. For the current development stack, use:
 
 ```text
 https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
 ```
 
+- Do NOT add this URL to the separate **OAuth & Permissions > Redirect URLs** used for bot token installs. Putting the Cognito `/oauth2/idpresponse` URL there causes the Manage Distribution "Install to another workspace" flow to redirect to Cognito, which rejects the request with "Invalid state" because bot installs do not send a `state` parameter.
 - Add the web app logout URL when the frontend exists.
 - Record the Slack OIDC Client ID and Client Secret in AWS secrets storage. The deployment command reads those values and passes them as CloudFormation parameters.
 
