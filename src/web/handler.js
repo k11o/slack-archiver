@@ -264,6 +264,7 @@ function renderPage(config) {
     const config = ${JSON.stringify(config)};
     const tokenKey = "slackArchiverTokens";
     const verifierKey = "slackArchiverPkceVerifier";
+    const stateKey = "slackArchiverOauthState";
 
     const signedOut = document.getElementById("signedOut");
     const signedIn = document.getElementById("signedIn");
@@ -283,6 +284,15 @@ function renderPage(config) {
     async function init() {
       const params = new URLSearchParams(window.location.search);
       if (params.has("code")) {
+        const expectedState = sessionStorage.getItem(stateKey);
+        const returnedState = params.get("state");
+        sessionStorage.removeItem(stateKey);
+        if (!expectedState || expectedState !== returnedState) {
+          statusEl.textContent = "Authentication failed. Please sign in again.";
+          history.replaceState({}, document.title, "/web");
+          renderAuthState();
+          return;
+        }
         await finishLogin(params.get("code"));
         history.replaceState({}, document.title, "/web");
       }
@@ -300,6 +310,8 @@ function renderPage(config) {
     async function startLogin() {
       const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)));
       sessionStorage.setItem(verifierKey, verifier);
+      const state = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+      sessionStorage.setItem(stateKey, state);
       const challenge = await sha256Base64Url(verifier);
       const url = new URL(config.cognitoDomain + "/oauth2/authorize");
       url.searchParams.set("client_id", config.clientId);
@@ -308,6 +320,7 @@ function renderPage(config) {
       url.searchParams.set("redirect_uri", config.redirectUri);
       url.searchParams.set("code_challenge_method", "S256");
       url.searchParams.set("code_challenge", challenge);
+      url.searchParams.set("state", state);
       url.searchParams.set("identity_provider", "Slack");
       window.location.href = url.toString();
     }
