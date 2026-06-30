@@ -1,3 +1,5 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient } = require('@aws-sdk/lib-dynamodb');
@@ -6,6 +8,9 @@ const {
   loadMessageContext,
   searchMessages,
 } = require('../search/handler');
+const { formatWorkspaceLabel } = require('./workspace');
+
+const workspaceScript = fs.readFileSync(path.join(__dirname, 'workspace.js'), 'utf8');
 
 const ssm = new SSMClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -261,6 +266,9 @@ function renderPage(config) {
   </main>
 
   <script>
+    ${workspaceScript}
+  </script>
+  <script>
     const config = ${JSON.stringify(config)};
     const tokenKey = "slackArchiverTokens";
     const verifierKey = "slackArchiverPkceVerifier";
@@ -310,29 +318,12 @@ function renderPage(config) {
 
     function renderWorkspaceLabel(idToken) {
       const label = document.getElementById("workspaceLabel");
-      const claims = idToken ? decodeIdToken(idToken) : null;
-      const teamName = claims?.["custom:slack_team_name"] || claims?.["https://slack.com/team_name"] || "";
-      const teamId = claims?.["custom:slack_team_id"] || claims?.["https://slack.com/team_id"] || "";
-      if (teamName || teamId) {
-        label.textContent = teamName ? teamName + " (" + teamId + ")" : teamId;
-        label.classList.remove("text-secondary");
-        label.classList.add("text-primary", "fw-semibold");
-      } else {
-        label.textContent = "Slack workspace account required";
-        label.classList.add("text-secondary");
-        label.classList.remove("text-primary", "fw-semibold");
-      }
-    }
-
-    function decodeIdToken(token) {
-      try {
-        const parts = String(token).split(".");
-        if (parts.length < 2) return null;
-        const json = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
-        return JSON.parse(decodeURIComponent(escape(json)));
-      } catch {
-        return null;
-      }
+      const text = formatWorkspaceLabel(idToken);
+      label.textContent = text;
+      const authed = text !== "Slack workspace account required";
+      label.classList.toggle("text-secondary", !authed);
+      label.classList.toggle("text-primary", authed);
+      label.classList.toggle("fw-semibold", authed);
     }
 
     async function startLogin() {
