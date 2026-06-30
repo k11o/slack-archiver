@@ -159,6 +159,20 @@ test('renderPage includes Cognito and API configuration', () => {
   assert.match(page, /https:\/\/api\.example\/api\/search/);
 });
 
+test('renderPage shows the authenticated Slack workspace in the header', () => {
+  const page = renderPage({
+    cognitoDomain: 'https://example.auth.ap-northeast-1.amazoncognito.com',
+    clientId: 'client-id',
+    redirectUri: 'https://api.example/web/callback',
+    searchUrl: 'https://api.example/api/search',
+  });
+
+  assert.match(page, /id="workspaceLabel"/);
+  assert.match(page, /custom:slack_team_name/);
+  assert.match(page, /custom:slack_team_id/);
+  assert.match(page, /decodeIdToken/);
+});
+
 function eventWithQuery(queryStringParameters = {}) {
   return {
     queryStringParameters,

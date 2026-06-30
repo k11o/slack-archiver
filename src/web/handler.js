@@ -237,7 +237,7 @@ function renderPage(config) {
     <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
       <div>
         <h1 class="h3 mb-1">Slack Archiver</h1>
-        <p class="text-secondary mb-0">Slack workspace account required</p>
+        <p class="text-secondary mb-0" id="workspaceLabel">Slack workspace account required</p>
       </div>
       <button id="logoutButton" class="btn btn-outline-secondary d-none" type="button">Logout</button>
     </div>
@@ -305,6 +305,34 @@ function renderPage(config) {
       signedOut.classList.toggle("d-none", authed);
       signedIn.classList.toggle("d-none", !authed);
       logoutButton.classList.toggle("d-none", !authed);
+      renderWorkspaceLabel(tokens?.id_token);
+    }
+
+    function renderWorkspaceLabel(idToken) {
+      const label = document.getElementById("workspaceLabel");
+      const claims = idToken ? decodeIdToken(idToken) : null;
+      const teamName = claims?.["custom:slack_team_name"] || claims?.["https://slack.com/team_name"] || "";
+      const teamId = claims?.["custom:slack_team_id"] || claims?.["https://slack.com/team_id"] || "";
+      if (teamName || teamId) {
+        label.textContent = teamName ? teamName + " (" + teamId + ")" : teamId;
+        label.classList.remove("text-secondary");
+        label.classList.add("text-primary", "fw-semibold");
+      } else {
+        label.textContent = "Slack workspace account required";
+        label.classList.add("text-secondary");
+        label.classList.remove("text-primary", "fw-semibold");
+      }
+    }
+
+    function decodeIdToken(token) {
+      try {
+        const parts = String(token).split(".");
+        if (parts.length < 2) return null;
+        const json = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
+        return JSON.parse(decodeURIComponent(escape(json)));
+      } catch {
+        return null;
+      }
     }
 
     async function startLogin() {
