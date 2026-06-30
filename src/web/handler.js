@@ -1,3 +1,5 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient } = require('@aws-sdk/lib-dynamodb');
@@ -6,6 +8,9 @@ const {
   loadMessageContext,
   searchMessages,
 } = require('../search/handler');
+const { formatWorkspaceLabel } = require('./workspace');
+
+const workspaceScript = fs.readFileSync(path.join(__dirname, 'workspace.js'), 'utf8');
 
 const ssm = new SSMClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -237,7 +242,7 @@ function renderPage(config) {
     <div class="d-flex align-items-center justify-content-between gap-3 mb-4">
       <div>
         <h1 class="h3 mb-1">Slack Archiver</h1>
-        <p class="text-secondary mb-0">Slack workspace account required</p>
+        <p class="text-secondary mb-0" id="workspaceLabel">Slack workspace account required</p>
       </div>
       <button id="logoutButton" class="btn btn-outline-secondary d-none" type="button">Logout</button>
     </div>
@@ -260,6 +265,9 @@ function renderPage(config) {
     </section>
   </main>
 
+  <script>
+    ${workspaceScript}
+  </script>
   <script>
     const config = ${JSON.stringify(config)};
     const tokenKey = "slackArchiverTokens";
@@ -305,6 +313,17 @@ function renderPage(config) {
       signedOut.classList.toggle("d-none", authed);
       signedIn.classList.toggle("d-none", !authed);
       logoutButton.classList.toggle("d-none", !authed);
+      renderWorkspaceLabel(tokens?.id_token);
+    }
+
+    function renderWorkspaceLabel(idToken) {
+      const label = document.getElementById("workspaceLabel");
+      const text = formatWorkspaceLabel(idToken);
+      label.textContent = text;
+      const authed = text !== "Slack workspace account required";
+      label.classList.toggle("text-secondary", !authed);
+      label.classList.toggle("text-primary", authed);
+      label.classList.toggle("fw-semibold", authed);
     }
 
     async function startLogin() {

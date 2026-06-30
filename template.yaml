@@ -192,6 +192,10 @@ Resources:
           AttributeDataType: String
           Mutable: true
           Required: false
+        - Name: slack_team_name
+          AttributeDataType: String
+          Mutable: true
+          Required: false
 
   WebUserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
@@ -216,6 +220,7 @@ Resources:
         name: name
         custom:slack_team_id: https://slack.com/team_id
         custom:slack_user_id: https://slack.com/user_id
+        custom:slack_team_name: https://slack.com/team_name
 
   WebUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -244,11 +249,13 @@ Resources:
         - name
         - custom:slack_team_id
         - custom:slack_user_id
+        - custom:slack_team_name
       WriteAttributes:
         - email
         - name
         - custom:slack_team_id
         - custom:slack_user_id
+        - custom:slack_team_name
 
   MessagesTable:
     Type: AWS::DynamoDB::Table

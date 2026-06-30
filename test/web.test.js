@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createSearchHandler, renderPage, resolveTeamId } = require('../src/web/handler');
+const { decodeIdToken, formatWorkspaceLabel } = require('../src/web/workspace');
 
 test('resolveTeamId accepts the namespaced team_id claim', () => {
   assert.equal(resolveTeamId({ 'https://slack.com/team_id': 'T_NS' }), 'T_NS');
@@ -158,6 +159,87 @@ test('renderPage includes Cognito and API configuration', () => {
   assert.match(page, /client-id/);
   assert.match(page, /https:\/\/api\.example\/api\/search/);
 });
+
+test('renderPage shows the authenticated Slack workspace in the header', () => {
+  const page = renderPage({
+    cognitoDomain: 'https://example.auth.ap-northeast-1.amazoncognito.com',
+    clientId: 'client-id',
+    redirectUri: 'https://api.example/web/callback',
+    searchUrl: 'https://api.example/api/search',
+  });
+
+  assert.match(page, /id="workspaceLabel"/);
+  assert.match(page, /formatWorkspaceLabel/);
+  assert.match(page, /custom:slack_team_name/);
+  assert.match(page, /custom:slack_team_id/);
+});
+
+test('decodeIdToken returns claims for a valid JWT', () => {
+  const token = makeJwt({ 'custom:slack_team_id': 'T123', sub: 'U123' });
+  assert.deepEqual(decodeIdToken(token), { 'custom:slack_team_id': 'T123', sub: 'U123' });
+});
+
+test('decodeIdToken returns null for invalid tokens', () => {
+  assert.equal(decodeIdToken('not-a-jwt'), null);
+  assert.equal(decodeIdToken('a.b'), null);
+  assert.equal(decodeIdToken(null), null);
+  assert.equal(decodeIdToken(undefined), null);
+});
+
+test('formatWorkspaceLabel shows team name and id when both are present', () => {
+  const token = makeJwt({
+    'custom:slack_team_name': 'My Workspace',
+    'custom:slack_team_id': 'T123',
+  });
+  assert.equal(formatWorkspaceLabel(token), 'My Workspace (T123)');
+});
+
+test('formatWorkspaceLabel falls back to team id when team name is missing', () => {
+  const token = makeJwt({ 'custom:slack_team_id': 'T123' });
+  assert.equal(formatWorkspaceLabel(token), 'T123');
+});
+
+test('formatWorkspaceLabel uses namespaced claims when custom claims are absent', () => {
+  const token = makeJwt({
+    'https://slack.com/team_name': 'NS Workspace',
+    'https://slack.com/team_id': 'T_NS',
+  });
+  assert.equal(formatWorkspaceLabel(token), 'NS Workspace (T_NS)');
+});
+
+test('formatWorkspaceLabel rejects mismatched team id claims', () => {
+  const token = makeJwt({
+    'custom:slack_team_id': 'T_ONE',
+    'https://slack.com/team_id': 'T_TWO',
+  });
+  assert.equal(formatWorkspaceLabel(token), 'Slack workspace account required');
+});
+
+test('formatWorkspaceLabel drops team name when name claims mismatch but id claims agree', () => {
+  const token = makeJwt({
+    'custom:slack_team_name': 'Name A',
+    'https://slack.com/team_name': 'Name B',
+    'custom:slack_team_id': 'T123',
+    'https://slack.com/team_id': 'T123',
+  });
+  assert.equal(formatWorkspaceLabel(token), 'T123');
+});
+
+test('formatWorkspaceLabel returns placeholder when no team id is present', () => {
+  const token = makeJwt({ 'custom:slack_team_name': 'Lonely Workspace' });
+  assert.equal(formatWorkspaceLabel(token), 'Slack workspace account required');
+});
+
+test('formatWorkspaceLabel returns placeholder when no token is provided', () => {
+  assert.equal(formatWorkspaceLabel(null), 'Slack workspace account required');
+  assert.equal(formatWorkspaceLabel(undefined), 'Slack workspace account required');
+});
+
+function makeJwt(payload) {
+  const header = Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${header}.${body}.`;
+}
 
 function eventWithQuery(queryStringParameters = {}) {
   return {
