@@ -1,7 +1,7 @@
 function decodeIdToken(token) {
   try {
     const parts = String(token).split(".");
-    if (parts.length < 2) return null;
+    if (parts.length !== 3) return null;
     const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const binary = typeof atob === "function"
       ? atob(base64)
