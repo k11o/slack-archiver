@@ -56,6 +56,7 @@ docs/
   codex-runbook.md
   data-model.md
   deployment.md
+  import-slack-export.md
   slack-app.md
 src/
   common/
@@ -75,7 +76,8 @@ For implementation and deployment work, read in this order:
 5. `docs/web-auth-slack-oidc.md`
 6. `docs/architecture.md`
 7. `docs/data-model.md`
-8. `template.yaml`
+8. `docs/import-slack-export.md`
+9. `template.yaml`
 
 ## Required external inputs
 
