@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Local Python tooling for slack-archiver development and deployment."
 requires-python = ">=3.13,<3.14"
 dependencies = [
-  "aws-sam-cli==1.162.1",
+  "aws-sam-cli==1.163.0",
 ]
 
 [tool.uv]
