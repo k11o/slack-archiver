@@ -133,6 +133,8 @@ Resources:
           COGNITO_CLIENT_ID: !Ref WebUserPoolClient
           COGNITO_REDIRECT_URI: !Sub '${WebBaseUrl}/web/callback'
           WEB_SEARCH_URL: !Sub '${WebBaseUrl}/api/search'
+          WEB_CHANNELS_URL: !Sub '${WebBaseUrl}/api/channels'
+          WEB_EXPORTS_URL: !Sub '${WebBaseUrl}/api/exports'
       Events:
         WebRoot:
           Type: HttpApi
@@ -172,6 +174,74 @@ Resources:
             ApiId: !Ref Api
             Path: /api/search
             Method: GET
+
+  WebExportApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/export/handler.api
+      Timeout: 30
+      Environment:
+        Variables:
+          ALLOWED_SLACK_TEAM_IDS: !Ref AllowedSlackTeamIds
+          COGNITO_ISSUER: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${WebUserPool}'
+          COGNITO_CLIENT_ID: !Ref WebUserPoolClient
+          EXPORT_JOBS_TABLE: !Ref ExportJobsTable
+          EXPORT_BUCKET: !Ref ExportBucket
+          EXPORT_WORKER_FUNCTION_NAME: !Ref ExportWorkerFunction
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ExportJobsTable
+        - S3ReadPolicy:
+            BucketName: !Ref ExportBucket
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/workspaces/*/slack-bot-token
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ExportWorkerFunction
+      Events:
+        WebChannels:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/channels
+            Method: GET
+        WebExportCreate:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/exports
+            Method: POST
+        WebExportStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/exports/{jobId}
+            Method: GET
+
+  ExportWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/export/handler.worker
+      Timeout: 300
+      MemorySize: 256
+      EphemeralStorage:
+        Size: 1024
+      Environment:
+        Variables:
+          EXPORT_JOBS_TABLE: !Ref ExportJobsTable
+          EXPORT_BUCKET: !Ref ExportBucket
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ExportJobsTable
+        - S3WritePolicy:
+            BucketName: !Ref ExportBucket
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/workspaces/*/slack-bot-token
 
   WebUserPool:
     Type: AWS::Cognito::UserPool
@@ -287,6 +357,38 @@ Resources:
         - AttributeName: sk
           KeyType: RANGE
 
+  ExportJobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  ExportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireChannelExports
+            Status: Enabled
+            ExpirationInDays: 1
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
 Outputs:
   ApiEndpoint:
     Description: API Gateway endpoint
@@ -300,3 +402,6 @@ Outputs:
   SlackInstallRedirectUrl:
     Description: Redirect URL to configure in the Slack app OAuth & Permissions for bot install from the Manage Distribution page
     Value: !Sub '${WebBaseUrl}/slack/install'
+  ExportBucketName:
+    Description: Private S3 bucket used for temporary channel export files
+    Value: !Ref ExportBucket

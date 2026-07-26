@@ -260,3 +260,16 @@ Known follow-up tasks:
 - Add message edit/delete handling.
 - Add pagination or better ranking for search results.
 - Decide whether DynamoDB billing should remain on-demand or move to provisioned capacity for stricter free-tier alignment.
+
+## Channel export resources
+
+The SAM stack creates an export-jobs DynamoDB table and a private S3 bucket for
+Web UI channel exports. No additional secret or deploy parameter is required.
+
+- Job records use DynamoDB TTL and expire approximately 24 hours after creation.
+- CSV objects use an S3 lifecycle rule with one-day expiration.
+- Download links are generated only for the Slack user who created the job and
+  remain valid for 15 minutes.
+- `ExportBucketName` is exposed as a stack output for operational inspection.
+
+See `docs/export-channel-messages.md` for the API flow and CSV schema.

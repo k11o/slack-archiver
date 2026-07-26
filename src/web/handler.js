@@ -8,6 +8,11 @@ const {
   loadMessageContext,
   searchMessages,
 } = require('../search/handler');
+const {
+  authenticateWebRequest,
+  resolveTeamId,
+  verifyCognitoJwt,
+} = require('./auth');
 const { formatWorkspaceLabel } = require('./workspace');
 
 const workspaceScript = fs.readFileSync(path.join(__dirname, 'workspace.js'), 'utf8');
@@ -17,7 +22,6 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const botTokenCache = new Map();
 const userCache = new Map();
 const channelCache = new Map();
-let cachedJwks;
 
 async function getBotToken({ teamId } = {}) {
   const paramName = getBotTokenParamName(teamId);
@@ -41,14 +45,9 @@ exports.page = async () => html(renderPage({
   clientId: process.env.COGNITO_CLIENT_ID,
   redirectUri: process.env.COGNITO_REDIRECT_URI,
   searchUrl: process.env.WEB_SEARCH_URL,
+  channelsUrl: process.env.WEB_CHANNELS_URL,
+  exportsUrl: process.env.WEB_EXPORTS_URL,
 }));
-
-function resolveTeamId(claims) {
-  const custom = claims['custom:slack_team_id'];
-  const namespaced = claims['https://slack.com/team_id'];
-  if (custom && namespaced && custom !== namespaced) return null;
-  return custom || namespaced || null;
-}
 
 function createSearchHandler({
   allowedSlackTeamIds,
@@ -60,16 +59,13 @@ function createSearchHandler({
   formatResult = formatWebResult,
 }) {
   return async (event) => {
-    let claims;
-    try {
-      claims = await verifyAuth(event);
-    } catch (error) {
-      return json({ error: 'unauthorized' }, error.statusCode || 401);
-    }
-    const teamId = resolveTeamId(claims);
-    if (!teamId || !isAllowedTeam({ teamId, allowedSlackTeamIds })) {
-      return json({ error: 'forbidden_workspace' }, 403);
-    }
+    const auth = await authenticateWebRequest({
+      event,
+      allowedSlackTeamIds,
+      verifyAuth,
+    });
+    if (auth.error) return json({ error: auth.error }, auth.statusCode);
+    const { teamId } = auth;
 
     const query = String(event.queryStringParameters?.q || '').trim();
     if (!query) return json({ results: [] });
@@ -85,37 +81,6 @@ function createSearchHandler({
 
     return json({ results });
   };
-}
-
-function isAllowedTeam({ teamId, allowedSlackTeamIds }) {
-  const allowed = parseAllowedTeamIds(allowedSlackTeamIds);
-  return allowed.size === 0 || allowed.has(teamId);
-}
-
-function parseAllowedTeamIds(value) {
-  if (!value) return new Set();
-  if (value instanceof Set) return value;
-  if (Array.isArray(value)) return new Set(value.filter(Boolean));
-  return new Set(String(value).split(',').map((item) => item.trim()).filter(Boolean));
-}
-
-async function verifyCognitoJwt(event) {
-  const authorization = event.headers?.authorization || event.headers?.Authorization || '';
-  const match = authorization.match(/^Bearer\s+(.+)$/i);
-  if (!match) throw Object.assign(new Error('missing bearer token'), { statusCode: 401 });
-
-  const issuer = process.env.COGNITO_ISSUER;
-  const audience = process.env.COGNITO_CLIENT_ID;
-  if (!issuer || !audience) throw Object.assign(new Error('missing cognito configuration'), { statusCode: 500 });
-
-  const { createRemoteJWKSet, jwtVerify } = await import('jose');
-  if (!cachedJwks) cachedJwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
-  try {
-    const result = await jwtVerify(match[1], cachedJwks, { issuer, audience });
-    return result.payload;
-  } catch (error) {
-    throw Object.assign(error, { statusCode: 401 });
-  }
 }
 
 async function formatWebResult({ botToken, teamId, hit, context }) {
@@ -262,6 +227,33 @@ function renderPage(config) {
       </form>
       <div id="status" class="text-secondary mb-3"></div>
       <div id="results" class="vstack gap-3"></div>
+
+      <section class="card shadow-sm mt-4">
+        <div class="card-body">
+          <h2 class="h5">Export channel messages</h2>
+          <p class="text-secondary">
+            Create a CSV containing every archived human message in one public channel.
+            Export files expire after 24 hours.
+          </p>
+          <form id="exportForm" class="row g-2 align-items-end">
+            <div class="col-md-6">
+              <label class="form-label" for="channelSelect">Public channel</label>
+              <select id="channelSelect" class="form-select">
+                <option value="">Loading channels...</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label" for="channelIdInput">Or archived channel ID</label>
+              <input id="channelIdInput" class="form-control muted-mono" type="text" placeholder="C0123456789" pattern="[A-Z0-9]{2,}">
+            </div>
+            <div class="col-md-2 d-grid">
+              <button id="exportButton" class="btn btn-outline-primary" type="submit">Create CSV</button>
+            </div>
+          </form>
+          <div id="exportStatus" class="text-secondary mt-3"></div>
+          <a id="exportDownload" class="btn btn-success mt-2 d-none" href="#">Download CSV</a>
+        </div>
+      </section>
     </section>
   </main>
 
@@ -282,10 +274,18 @@ function renderPage(config) {
     const queryInput = document.getElementById("queryInput");
     const statusEl = document.getElementById("status");
     const resultsEl = document.getElementById("results");
+    const exportForm = document.getElementById("exportForm");
+    const channelSelect = document.getElementById("channelSelect");
+    const channelIdInput = document.getElementById("channelIdInput");
+    const exportButton = document.getElementById("exportButton");
+    const exportStatus = document.getElementById("exportStatus");
+    const exportDownload = document.getElementById("exportDownload");
+    let channelsLoaded = false;
 
     loginButton.addEventListener("click", startLogin);
     logoutButton.addEventListener("click", logout);
     searchForm.addEventListener("submit", search);
+    exportForm.addEventListener("submit", startExport);
 
     init();
 
@@ -314,6 +314,7 @@ function renderPage(config) {
       signedIn.classList.toggle("d-none", !authed);
       logoutButton.classList.toggle("d-none", !authed);
       renderWorkspaceLabel(tokens?.id_token);
+      if (authed && !channelsLoaded) loadChannels();
     }
 
     function renderWorkspaceLabel(idToken) {
@@ -400,6 +401,127 @@ function renderPage(config) {
           '<div class="card-body">' + context + '</div>' +
         '</article>';
       }).join("");
+    }
+
+    async function loadChannels() {
+      channelsLoaded = true;
+      let response;
+      try {
+        response = await fetch(config.channelsUrl, { headers: authHeaders() });
+      } catch {
+        showChannelIdFallback();
+        return;
+      }
+      if (response.status === 401 || response.status === 403) {
+        exportStatus.textContent = "Authentication failed. Please sign in again.";
+        return;
+      }
+      if (!response.ok) {
+        showChannelIdFallback();
+        return;
+      }
+      const payload = await response.json();
+      channelSelect.innerHTML = '<option value="">Select a channel</option>';
+      for (const channel of payload.channels || []) {
+        const option = document.createElement("option");
+        option.value = channel.id;
+        option.dataset.name = channel.name;
+        option.textContent = "#" + channel.name + (channel.is_archived ? " (archived)" : "");
+        channelSelect.appendChild(option);
+      }
+    }
+
+    function showChannelIdFallback() {
+      exportStatus.textContent = "Could not load Slack channels. You can enter a channel ID directly.";
+      channelSelect.innerHTML = '<option value="">Select by channel ID below</option>';
+    }
+
+    async function startExport(event) {
+      event.preventDefault();
+      const manualChannelId = channelIdInput.value.trim().toUpperCase();
+      const channelId = manualChannelId || channelSelect.value;
+      if (!channelId) {
+        exportStatus.textContent = "Select a channel or enter its channel ID.";
+        return;
+      }
+      const selected = channelSelect.selectedOptions[0];
+      const channelName = manualChannelId
+        ? channelId
+        : selected?.dataset.name || channelId;
+      exportButton.disabled = true;
+      exportDownload.classList.add("d-none");
+      exportStatus.textContent = "Starting export...";
+      let response;
+      try {
+        response = await fetch(config.exportsUrl, {
+          method: "POST",
+          headers: { ...authHeaders(), "content-type": "application/json" },
+          body: JSON.stringify({ channel_id: channelId, channel_name: channelName }),
+        });
+      } catch {
+        exportButton.disabled = false;
+        exportStatus.textContent = "Could not reach the export service. Please try again.";
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        exportButton.disabled = false;
+        exportStatus.textContent = exportErrorMessage(payload.error);
+        return;
+      }
+      await pollExport(payload.job.job_id, 0);
+    }
+
+    async function pollExport(jobId, retryCount) {
+      let response;
+      try {
+        response = await fetch(config.exportsUrl + "/" + encodeURIComponent(jobId), {
+          headers: authHeaders(),
+        });
+      } catch {
+        if (retryCount < 5) {
+          exportStatus.textContent = "Waiting to reconnect to the export service...";
+          window.setTimeout(() => pollExport(jobId, retryCount + 1), 2000);
+        } else {
+          exportButton.disabled = false;
+          exportStatus.textContent = "Could not check the export. Please try creating it again.";
+        }
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        exportButton.disabled = false;
+        exportStatus.textContent = exportErrorMessage(payload.error);
+        return;
+      }
+      const job = payload.job;
+      if (job.status === "completed") {
+        exportButton.disabled = false;
+        exportStatus.textContent = "Exported " + job.message_count + " message(s).";
+        exportDownload.href = job.download_url;
+        exportDownload.classList.remove("d-none");
+        return;
+      }
+      if (job.status === "failed") {
+        exportButton.disabled = false;
+        exportStatus.textContent = "Export failed: " + (job.error_message || "unknown error");
+        return;
+      }
+      exportStatus.textContent = job.status === "running" ? "Creating CSV..." : "Export queued...";
+      window.setTimeout(() => pollExport(jobId, 0), 2000);
+    }
+
+    function authHeaders() {
+      return { authorization: "Bearer " + getTokens().id_token };
+    }
+
+    function exportErrorMessage(error) {
+      if (error === "channel_not_archived") return "No archived messages were found for that channel.";
+      if (error === "invalid_channel_id") return "Enter a valid Slack channel ID.";
+      if (error === "unauthorized" || error === "forbidden_workspace" || error === "forbidden_user") {
+        return "Authentication failed. Please sign in again.";
+      }
+      return "Could not create the export. Please try again.";
     }
 
     function logout() {

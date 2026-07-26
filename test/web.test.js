@@ -152,12 +152,18 @@ test('renderPage includes Cognito and API configuration', () => {
     clientId: 'client-id',
     redirectUri: 'https://api.example/web/callback',
     searchUrl: 'https://api.example/api/search',
+    channelsUrl: 'https://api.example/api/channels',
+    exportsUrl: 'https://api.example/api/exports',
   });
 
   assert.match(page, /Slack Archiver/);
   assert.match(page, /bootstrap@5\.3\.8/);
   assert.match(page, /client-id/);
   assert.match(page, /https:\/\/api\.example\/api\/search/);
+  assert.match(page, /https:\/\/api\.example\/api\/channels/);
+  assert.match(page, /https:\/\/api\.example\/api\/exports/);
+  assert.match(page, /Export channel messages/);
+  assert.match(page, /Create CSV/);
 });
 
 test('renderPage shows the authenticated Slack workspace in the header', () => {

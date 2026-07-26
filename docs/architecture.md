@@ -26,6 +26,7 @@ Slack Slash Cmd ──┘
 | API Gateway HTTP API | Public HTTPS endpoint for Slack and optional web frontend API. |
 | Lambda | Signature verification, normalization, persistence, and search. |
 | DynamoDB | Stores message records and optional search index entries. |
+| Amazon S3 | Temporarily stores generated channel-export CSV files. |
 | CloudWatch Logs | Short-retention logs for debugging. |
 
 ## Why not periodic Slack crawling?
@@ -53,11 +54,21 @@ OpenSearch would improve search quality, but it adds a persistent search service
 4. Lambda fetches message records.
 5. Lambda reranks and returns the top results.
 
+## Channel export flow
+
+1. An authenticated Web UI user chooses a public channel.
+2. The Web API scopes the request to the Slack workspace and records an export job.
+3. An asynchronous worker queries the channel's DynamoDB partition in timestamp order.
+4. The worker writes a UTF-8 CSV and uploads it to a private S3 bucket.
+5. The owning user receives a short-lived presigned download URL.
+6. DynamoDB TTL and the S3 lifecycle remove temporary export data after one day.
+
 ## Cost controls
 
 - Do not put Lambda in a VPC.
 - Do not create NAT Gateway.
 - Set CloudWatch log retention to 7 or 14 days.
 - Do not store Slack file bodies in the first version.
+- Expire generated CSV exports after one day.
 - Use DynamoDB provisioned capacity conservatively or on-demand with billing alarms, depending on account/free-tier strategy.
 - Add AWS Budgets alert before deployment.
