@@ -267,6 +267,9 @@ test('export worker uploads the generated CSV and records completion metadata', 
         return {};
       },
       s3Send: async (command) => {
+        for await (const _chunk of command.input.Body) {
+          // Consuming the stream matches S3Client.send before the worker removes its temporary file.
+        }
         uploads.push(command);
         return {};
       },
