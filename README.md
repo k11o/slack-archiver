@@ -36,6 +36,7 @@ Lambda search API
 - Build a simple n-gram search index for Japanese and English text.
 - Search from a Slack slash command.
 - Search from a Slack-authenticated web UI.
+- Export one public channel's archived messages from the Web UI as CSV.
 - Avoid EC2 and always-on compute.
 
 ## Non-goals for the first version
@@ -56,6 +57,7 @@ docs/
   codex-runbook.md
   data-model.md
   deployment.md
+  export-channel-messages.md
   import-slack-export.md
   slack-app.md
 src/
@@ -77,7 +79,8 @@ For implementation and deployment work, read in this order:
 6. `docs/architecture.md`
 7. `docs/data-model.md`
 8. `docs/import-slack-export.md`
-9. `template.yaml`
+9. `docs/export-channel-messages.md`
+10. `template.yaml`
 
 ## Required external inputs
 
