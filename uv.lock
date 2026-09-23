@@ -48,7 +48,7 @@ wheels = [
 
 [[package]]
 name = "aws-sam-cli"
-version = "1.166.1"
+version = "1.166.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aws-lambda-builders" },
@@ -76,9 +76,9 @@ dependencies = [
     { name = "tzlocal" },
     { name = "watchdog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9f/f8/af8a25e955ad132e346b1bf036fd479407de3d07fbf89c3e796bd19d39c2/aws_sam_cli-1.166.1.tar.gz", hash = "sha256:32a4c5c1f03211d51d93b58e3cc5f4fb331c3dee4bff4105cbe0a24c71b770b3", size = 7951657, upload-time = "2026-09-04T01:39:17.814Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/f1/77ee195a7838a6e4117a115eef67690cbed6951f4c4cac3c55b7580465aa/aws_sam_cli-1.166.2.tar.gz", hash = "sha256:5b0ee931145760d1c368573da0309aa03c4d062e6395fa1f3b2b96bd936dce63", size = 7957891, upload-time = "2026-09-11T21:00:20.055Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/e9/72f10ce81031670259620b113bc3a750c21cf15009367df95fb58ee9f4a1/aws_sam_cli-1.166.1-py3-none-any.whl", hash = "sha256:c4abe239d1d481c2810a80bf687b30b6461d358ad9136def8a8f1925caa39004", size = 8309361, upload-time = "2026-09-04T01:39:15.541Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/0b/a9db2fed658b3e5c3ecca49221eafaa83615c5a0b7e704ed1f51b4e16510/aws_sam_cli-1.166.2-py3-none-any.whl", hash = "sha256:d14379e69ab978428973a58a4b152c49a636a3cd5d471a0269370e70eee39a51", size = 8312358, upload-time = "2026-09-11T21:00:17.446Z" },
 ]
 
 [[package]]
@@ -1055,7 +1055,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "aws-sam-cli", specifier = "==1.166.1" }]
+requires-dist = [{ name = "aws-sam-cli", specifier = "==1.166.2" }]
 
 [[package]]
 name = "sympy"
