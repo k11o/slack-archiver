@@ -3,6 +3,7 @@ const test = require('node:test');
 const {
   buildNewIndexEntries,
   isOldIndexEntry,
+  writeBatches,
   reindex,
   cleanupOldIndex,
   parseArgs,
@@ -41,7 +42,8 @@ test('buildNewIndexEntries scopes tokens per workspace and does not collide acro
   for (const pk of bPks) assert.equal(aPks.has(pk), false);
 });
 
-test('buildNewIndexEntries returns empty for messages missing required fields or text', () => {
+test('buildNewIndexEntries skips deleted messages and messages missing required fields or text', () => {
+  assert.deepEqual(buildNewIndexEntries(message({ deleted: true })), []);
   assert.deepEqual(buildNewIndexEntries({ text: 'hello' }), []);
   assert.deepEqual(buildNewIndexEntries(message({ team_id: undefined })), []);
   assert.deepEqual(buildNewIndexEntries(message({ channel_id: undefined })), []);
@@ -71,6 +73,9 @@ test('parseArgs defaults to reindex mode and parses flags', () => {
   assert.equal(parseArgs(['--messages-table=m', '--index-table=i']).indexTable, 'i');
   assert.equal(parseArgs(['--help']).help, true);
   assert.throws(() => parseArgs(['--bogus']), /unknown argument/);
+  assert.throws(() => parseArgs(['--limit=0']), /positive integer/);
+  assert.throws(() => parseArgs(['--limit=not-a-number']), /positive integer/);
+  assert.throws(() => parseArgs(['--team-id=']), /Slack team ID/);
 });
 
 test('reindex scans messages, writes workspace-scoped entries, and skips empty messages', async () => {
@@ -81,11 +86,13 @@ test('reindex scans messages, writes workspace-scoped entries, and skips empty m
         sent.push(command);
         if (command.constructor.name === 'ScanCommand') {
           return {
-            Items: [
-              message({ text: 'hello needle' }),
-              message({ text: '', ts: '1710000002.000000' }),
-              message({ team_id: 'T_OTHER', channel_id: 'C2', ts: '1710000003.000000', text: 'needle other' }),
-            ],
+            Items: command.input.TableName === 'messages-table'
+              ? [
+                message({ text: 'hello needle' }),
+                message({ text: '', ts: '1710000002.000000' }),
+                message({ team_id: 'T_OTHER', channel_id: 'C2', ts: '1710000003.000000', text: 'needle other' }),
+              ]
+              : [],
             LastEvaluatedKey: null,
           };
         }
@@ -106,6 +113,96 @@ test('reindex scans messages, writes workspace-scoped entries, and skips empty m
   assert.ok(items.some((item) => item.pk.startsWith('workspace#T_OTHER#token#')));
 });
 
+test('reindex removes stale entries and entries for tombstones', async () => {
+  const deleted = message({
+    ts: '1710000002.000000',
+    sk: 'ts#1710000002.000000',
+    deleted: true,
+    text: '',
+    index_tokens: ['gone'],
+  });
+  const staleEntries = [
+    { pk: 'workspace#T123#token#old', sk: 'workspace#T123#channel#C1#ts#1710000001.000000' },
+    { pk: 'workspace#T123#token#gone', sk: 'workspace#T123#channel#C1#ts#1710000002.000000' },
+  ];
+  const sent = [];
+  const result = await reindex({
+    ddb: {
+      send: async (command) => {
+        sent.push(command);
+        if (command.constructor.name === 'ScanCommand') {
+          return {
+            Items: command.input.TableName === 'messages-table'
+              ? [message(), deleted]
+              : staleEntries,
+            LastEvaluatedKey: null,
+          };
+        }
+        return {};
+      },
+    },
+    messagesTable: 'messages-table',
+    indexTable: 'index-table',
+  });
+
+  assert.equal(result.deleted, 2);
+  assert.ok(sent.filter((command) => command.constructor.name === 'ScanCommand')
+    .every((command) => command.input.ConsistentRead === true));
+  const deletes = sent.flatMap((command) => command.input.RequestItems?.['index-table'] || [])
+    .filter((request) => request.DeleteRequest);
+  assert.deepEqual(deletes.map((request) => request.DeleteRequest.Key), staleEntries);
+  const tombstoneCleanup = sent.find((command) => command.constructor.name === 'UpdateCommand');
+  assert.equal(tombstoneCleanup.input.TableName, 'messages-table');
+  assert.equal(tombstoneCleanup.input.UpdateExpression, 'REMOVE index_tokens');
+  assert.equal(tombstoneCleanup.input.ConditionExpression, '#deleted = :deleted AND attribute_not_exists(revision_ts)');
+});
+
+test('limited reindex leaves unscanned index entries untouched', async () => {
+  const stale = { pk: 'workspace#T123#token#stale', sk: 'workspace#T123#channel#C1#ts#old' };
+  const sent = [];
+  await reindex({
+    ddb: {
+      send: async (command) => {
+        sent.push(command);
+        if (command.constructor.name === 'ScanCommand') {
+          return {
+            Items: command.input.TableName === 'messages-table' ? [message()] : [stale],
+            LastEvaluatedKey: null,
+          };
+        }
+        return {};
+      },
+    },
+    messagesTable: 'messages-table',
+    indexTable: 'index-table',
+    limit: 1,
+  });
+
+  assert.equal(sent.flatMap((command) => command.input.RequestItems?.['index-table'] || [])
+    .some((request) => request.DeleteRequest), false);
+});
+
+test('writeBatches retries unprocessed DynamoDB writes', async () => {
+  let calls = 0;
+  const entry = { PutRequest: { Item: { pk: 'p', sk: 's' } } };
+  const written = await writeBatches({
+    ddb: {
+      send: async () => {
+        calls += 1;
+        return calls === 1 ? { UnprocessedItems: { index: [entry] } } : {};
+      },
+    },
+    entries: [entry],
+    indexTable: 'index',
+    dryRun: false,
+    label: 'reindex',
+    sleep: async () => {},
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(written, 1);
+});
+
 test('reindex filters to a single team_id when teamId is provided', async () => {
   const sent = [];
   await reindex({
@@ -113,9 +210,17 @@ test('reindex filters to a single team_id when teamId is provided', async () => 
       send: async (command) => {
         sent.push(command);
         if (command.constructor.name === 'ScanCommand') {
-          assert.equal(command.input.FilterExpression, 'team_id = :team');
-          assert.deepEqual(command.input.ExpressionAttributeValues, { ':team': 'T123' });
-          return { Items: [message()], LastEvaluatedKey: null };
+          if (command.input.TableName === 'messages-table') {
+            assert.equal(command.input.FilterExpression, 'team_id = :team');
+            assert.deepEqual(command.input.ExpressionAttributeValues, { ':team': 'T123' });
+            return { Items: [message()], LastEvaluatedKey: null };
+          }
+          assert.equal(command.input.FilterExpression, 'begins_with(pk, :prefix) AND contains(pk, :token_marker)');
+          assert.deepEqual(command.input.ExpressionAttributeValues, {
+            ':prefix': 'workspace#T123#token#',
+            ':token_marker': '#token#',
+          });
+          return { Items: [], LastEvaluatedKey: null };
         }
         return {};
       },
@@ -127,6 +232,14 @@ test('reindex filters to a single team_id when teamId is provided', async () => 
   assert.ok(sent.some((command) => command.constructor.name === 'BatchWriteCommand'));
 });
 
+test('reindex refuses to use the same table for source messages and index entries', async () => {
+  await assert.rejects(reindex({
+    ddb: { send: async () => { throw new Error('must not scan'); } },
+    messagesTable: 'same-table',
+    indexTable: 'same-table',
+  }), /messages and index tables must be different/);
+});
+
 test('reindex dry-run scans messages but does not send BatchWriteCommand', async () => {
   const sent = [];
   const result = await reindex({
@@ -134,7 +247,10 @@ test('reindex dry-run scans messages but does not send BatchWriteCommand', async
       send: async (command) => {
         sent.push(command);
         if (command.constructor.name === 'ScanCommand') {
-          return { Items: [message()], LastEvaluatedKey: null };
+          return {
+            Items: command.input.TableName === 'messages-table' ? [message()] : [],
+            LastEvaluatedKey: null,
+          };
         }
         return {};
       },

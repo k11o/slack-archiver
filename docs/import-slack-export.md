@@ -7,7 +7,7 @@ The importer writes the same keys used by live Slack Events ingestion:
 - `slack_messages`: `workspace#{team_id}#channel#{channel_id}` / `ts#{message_ts}`
 - `slack_search_index`: `workspace#{team_id}#token#{token}` / `workspace#{team_id}#channel#{channel_id}#ts#{message_ts}`
 
-Duplicate handling is idempotent. Before writing each batch, the script reads the target message keys from `slack_messages`; messages already present are skipped, and their search-index entries are not rewritten. Duplicate messages inside the same export batch are also skipped.
+Duplicate handling is idempotent. The importer reads target message keys and inserts each message with a conditional write, so an existing record or delete tombstone cannot be overwritten even if it appears after the duplicate check. Duplicate messages inside the same export batch are also skipped. Index writes use retryable batches; run the full search-index `reindex` repair from `docs/backfill.md` if an import stops after writing messages. If an import overlaps live edits or deletions, run a full `reindex` after both the import and in-flight event writes finish; batch index writes can otherwise leave stale token entries.
 
 ## Prerequisites
 
@@ -79,7 +79,8 @@ The script can also import an already extracted export directory with the same `
 
 ## Notes
 
-- Public channel messages are imported from `channel-name/YYYY-MM-DD.json` files listed in `channels.json`.
+- Public channel messages are imported from `channel-name/YYYY-MM-DD.json` files listed in `channels.json`; entries marked `is_private` are skipped.
 - Messages with Slack subtypes, bot IDs, app IDs, or bot profiles are skipped to match the current live ingest behavior.
 - Search-index writes are derived from the imported message text with the same tokenizer used by live ingestion.
-- Re-running the command is safe; existing message keys are skipped.
+- Re-running the command is safe; existing message keys, including tombstones, are skipped. Re-importing does not update a live-edited message.
+- The importer does not modify existing index entries; use the full `reindex` repair if index writes were interrupted.

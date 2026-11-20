@@ -6,6 +6,7 @@ const {
   DynamoDBDocumentClient,
   BatchGetCommand,
   BatchWriteCommand,
+  PutCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { normalizeText, tokenize } = require('../src/common/text');
 
@@ -99,7 +100,7 @@ function loadChannelMap({ source, entries }) {
   const channels = readJson(source, channelsEntry.name);
   const byName = new Map();
   for (const channel of channels) {
-    if (channel && channel.name && channel.id) byName.set(channel.name, channel);
+    if (channel && channel.name && channel.id && channel.is_private !== true) byName.set(channel.name, channel);
   }
   return byName;
 }
@@ -140,6 +141,7 @@ function isIgnoredExportMessage(message) {
 function buildMessageItem({ message, teamId, channel }) {
   const ts = message.ts;
   const text = message.text || '';
+  const searchTokens = tokenize(text);
   const now = new Date().toISOString();
   const pk = `workspace#${teamId}#channel#${channel.id}`;
   const sk = `ts#${ts}`;
@@ -159,6 +161,9 @@ function buildMessageItem({ message, teamId, channel }) {
     thread_ts: message.thread_ts || null,
     text,
     normalized_text: normalizeText(text),
+    search_tokens: searchTokens,
+    index_tokens: searchTokens,
+    revision_ts: Number.parseFloat(message.edited?.ts || ts) || 0,
     client_msg_id: message.client_msg_id || null,
     event_id: null,
     deleted: false,
@@ -179,6 +184,7 @@ function buildIndexWriteRequests(message) {
         message_pk: message.pk,
         message_sk: message.sk,
         ts: message.ts,
+        revision_ts: message.revision_ts || Number.parseFloat(message.ts) || 0,
       },
     },
   }));
@@ -217,24 +223,49 @@ async function batchGetExistingKeys({ ddb, tableName, keys }) {
   return existing;
 }
 
-async function batchWrite({ ddb, tableName, requests, dryRun, label }) {
+async function batchWrite({ ddb, tableName, requests, dryRun, label, sleep = wait }) {
   let written = 0;
   for (let i = 0; i < requests.length; i += MAX_BATCH_WRITE) {
-    let chunk = requests.slice(i, i + MAX_BATCH_WRITE);
+    let pending = requests.slice(i, i + MAX_BATCH_WRITE);
     if (dryRun) {
-      written += chunk.length;
+      written += pending.length;
     } else {
-      do {
-        const response = await ddb.send(new BatchWriteCommand({ RequestItems: { [tableName]: chunk } }));
-        written += chunk.length - (response.UnprocessedItems?.[tableName]?.length || 0);
-        chunk = response.UnprocessedItems?.[tableName] || [];
-      } while (chunk.length);
+      for (let attempt = 0; pending.length && attempt < 5; attempt += 1) {
+        const response = await ddb.send(new BatchWriteCommand({ RequestItems: { [tableName]: pending } }));
+        const unprocessed = response.UnprocessedItems?.[tableName] || [];
+        written += pending.length - unprocessed.length;
+        pending = unprocessed;
+        if (pending.length && attempt < 4) await sleep(25 * (2 ** attempt));
+      }
+      if (pending.length) throw new Error(`${label}: ${pending.length} writes remained unprocessed`);
     }
     if (written % 250 === 0 || i + MAX_BATCH_WRITE >= requests.length) {
       process.stderr.write(`${label}: ${written}/${requests.length}\n`);
     }
   }
   return written;
+}
+
+async function putNewMessages({ ddb, tableName, items, dryRun }) {
+  if (dryRun) return items;
+  const inserted = [];
+  for (const item of items) {
+    try {
+      await ddb.send(new PutCommand({
+        TableName: tableName,
+        Item: item,
+        ConditionExpression: 'attribute_not_exists(pk)',
+      }));
+      inserted.push(item);
+    } catch (error) {
+      if (error.name !== 'ConditionalCheckFailedException') throw error;
+    }
+  }
+  return inserted;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function importSlackExport({
@@ -301,18 +332,24 @@ async function importSlackExport({
     stats.skippedDuplicate += uniqueCandidates.length - newMessages.length;
     if (!newMessages.length) continue;
 
-    const messageRequests = newMessages.map((item) => ({ PutRequest: { Item: item } }));
-    await batchWrite({ ddb, tableName: messagesTable, requests: messageRequests, dryRun, label: 'messages' });
-    stats.imported += newMessages.length;
+    const insertedMessages = await putNewMessages({
+      ddb,
+      tableName: messagesTable,
+      items: newMessages,
+      dryRun,
+    });
+    stats.imported += insertedMessages.length;
+    stats.skippedDuplicate += newMessages.length - insertedMessages.length;
 
     const indexRequests = [];
-    for (const message of newMessages) {
+    for (const message of insertedMessages) {
       for (const request of buildIndexWriteRequests(message)) indexRequests.push(request);
     }
     const { unique: uniqueIndexRequests } = uniqueByKey(
       indexRequests,
       (request) => `${request.PutRequest.Item.pk}\0${request.PutRequest.Item.sk}`,
     );
+    // shortcut: index batches can race with live revisions; reindex after overlapping imports.
     stats.indexWritten += await batchWrite({
       ddb,
       tableName: indexTable,
@@ -366,5 +403,7 @@ module.exports = {
   isIgnoredExportMessage,
   buildMessageItem,
   buildIndexWriteRequests,
+  batchWrite,
+  putNewMessages,
   importSlackExport,
 };

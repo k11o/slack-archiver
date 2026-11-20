@@ -17,10 +17,13 @@ Primary access pattern: fetch messages by workspace/channel and timestamp.
 | text | Original message text. |
 | normalized_text | Search-normalized message text. |
 | permalink | Optional Slack permalink. |
-| event_id | Slack event ID for deduplication. |
+| event_id | Last Slack event ID applied to the record, for diagnostics; `revision_ts` provides stale-event protection. |
 | deleted | Boolean tombstone for deletes. |
 | created_at | Archive insertion timestamp. |
 | updated_at | Archive update timestamp. |
+| revision_ts | Slack event revision time in epoch seconds; conditional writes prevent older events from restoring stale content. |
+| search_tokens | Tokens derived from the current non-deleted message text. |
+| index_tokens | Current and pending index tokens, retained until index reconciliation succeeds. Cleared for tombstones after removal. |
 
 ## Table: slack_search_index
 
@@ -35,15 +38,16 @@ Primary access pattern: workspace-scoped token to candidate messages.
 | team_id | Slack workspace/team ID. |
 | token | Normalized token or n-gram. |
 | ts | Slack message timestamp. |
+| revision_ts | Message revision used to guard search-index reconciliation against stale event writes. |
 
 ## Tokenization
 
-Initial approach:
+Current tokenizer:
 
-- Lowercase ASCII.
-- Split ASCII words, numbers, URLs, mentions, and channel references.
-- Generate 2-gram or 3-gram tokens for Japanese text.
-- Cap tokens per message to avoid excessive write amplification.
+- Normalize width, lowercase ASCII, and collapse whitespace.
+- Keep ASCII terms, numbers, URLs, mentions, and channel references as tokens.
+- Generate bigrams for Japanese text.
+- Skip ASCII tokens over 1 KiB and cap tokens per message to keep partition keys valid and write amplification bounded.
 
 ## Retention
 

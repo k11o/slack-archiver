@@ -14,7 +14,7 @@ const botTokenCache = new Map();
 const userCache = new Map();
 
 const MAX_QUERY_TOKENS = 5;
-const MAX_CANDIDATES = 20;
+const MAX_CANDIDATES = 25;
 const MAX_HITS = 5;
 const CONTEXT_SIZE = 5;
 const CONTEXT_PAGE_LIMIT = 25;
@@ -89,6 +89,14 @@ async function fetchSlackUser({ botToken, userId }) {
   return name;
 }
 
+async function fetchSlackChannel({ botToken, channelId }) {
+  const response = await fetch(`https://slack.com/api/conversations.info?channel=${encodeURIComponent(channelId)}`, {
+    headers: { authorization: `Bearer ${botToken}` },
+  });
+  const payload = await response.json();
+  return response.ok && payload.ok ? payload.channel : null;
+}
+
 async function invokeSearchWorker({ body }) {
   await lambda.send(new InvokeCommand({
     FunctionName: process.env.SEARCH_WORKER_FUNCTION_NAME,
@@ -120,7 +128,14 @@ function createHandler({ getSigningSecret: loadSigningSecret, invokeWorker = inv
   };
 }
 
-function createWorker({ getBotToken: loadBotToken, ddbSend, slackPost, slackUserInfo = fetchSlackUser, responsePost = postResponseUrl }) {
+function createWorker({
+  getBotToken: loadBotToken,
+  ddbSend,
+  slackPost,
+  slackUserInfo = fetchSlackUser,
+  slackChannelInfo = fetchSlackChannel,
+  responsePost = postResponseUrl,
+}) {
   return async (event) => {
     const body = event.body || {};
     const query = normalizeText(body.text || '');
@@ -135,18 +150,32 @@ function createWorker({ getBotToken: loadBotToken, ddbSend, slackPost, slackUser
     }
 
     const botToken = await loadBotToken({ teamId });
+    const publicChannelIds = new Set();
+    for (const channelId of new Set(hits.map((hit) => hit.channel_id))) {
+      const channel = await slackChannelInfo({ botToken, channelId });
+      if (channel?.is_private === false) publicChannelIds.add(channelId);
+    }
+    const publicHits = hits.filter((hit) => publicChannelIds.has(hit.channel_id)).slice(0, MAX_HITS);
+    if (!publicHits.length) {
+      await responsePost({
+        responseUrl: body.response_url,
+        body: { response_type: 'ephemeral', text: `見つかりませんでした: ${query}` },
+      });
+      return empty();
+    }
+
     const requesterName = await resolveUserName({ botToken, userId: body.user_id, slackUserInfo });
     const parent = await slackPost({
       botToken,
       message: {
         channel: body.channel_id,
-        text: `${requesterName} の検索: \`${escapeSlackText(query)}\` (${hits.length}件${hits.length === MAX_HITS ? '、上限まで表示' : ''})`,
+        text: `${requesterName} の検索: \`${escapeSlackText(query)}\` (${publicHits.length}件${publicHits.length === MAX_HITS ? '、上限まで表示' : ''})`,
         unfurl_links: false,
         unfurl_media: false,
       },
     });
 
-    for (const [index, hit] of hits.entries()) {
+    for (const [index, hit] of publicHits.entries()) {
       const context = await loadMessageContext({ message: hit, ddbSend });
       const userNames = await loadUserNames({ botToken, messages: context, slackUserInfo });
       await slackPost({
@@ -154,7 +183,7 @@ function createWorker({ getBotToken: loadBotToken, ddbSend, slackPost, slackUser
         message: {
           channel: body.channel_id,
           thread_ts: parent.ts,
-          text: formatHitThreadMessage({ hit, context, index, total: hits.length, userNames }),
+          text: formatHitThreadMessage({ hit, context, index, total: publicHits.length, userNames }),
           unfurl_links: false,
           unfurl_media: false,
         },
@@ -209,11 +238,12 @@ async function searchMessages({ query, teamId, ddbSend }) {
     const result = await ddbSend(new GetCommand({
       TableName: process.env.MESSAGES_TABLE,
       Key: { pk: candidate.pk, sk: candidate.sk },
+      ConsistentRead: true,
     }));
     if (result.Item && result.Item.team_id === teamId && isSearchableMessage(result.Item, query)) {
       messages.push(result.Item);
     }
-    if (messages.length >= MAX_HITS) break;
+    if (messages.length >= MAX_CANDIDATES) break;
   }
   return messages;
 }
@@ -261,6 +291,7 @@ async function loadDirectionalContext({ message, ddbSend, before }) {
       KeyConditionExpression: before ? 'pk = :pk AND sk < :sk' : 'pk = :pk AND sk > :sk',
       ExpressionAttributeValues: { ':pk': message.pk, ':sk': message.sk },
       ScanIndexForward: !before,
+      ConsistentRead: true,
       Limit: CONTEXT_PAGE_LIMIT,
     };
     if (exclusiveStartKey) input.ExclusiveStartKey = exclusiveStartKey;
@@ -415,6 +446,7 @@ exports.loadUserNames = loadUserNames;
 exports.formatHitThreadMessage = formatHitThreadMessage;
 exports.formatSlackMessageText = formatSlackMessageText;
 exports.isArchiverGeneratedMessage = isArchiverGeneratedMessage;
+exports.MAX_HITS = MAX_HITS;
 exports.main = createHandler({
   getSigningSecret,
   invokeWorker: invokeSearchWorker,

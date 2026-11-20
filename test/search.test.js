@@ -45,6 +45,7 @@ test('search worker posts a parent message and threaded hit details', async () =
   const hit = message({ ts: '1710000005.000000', text: 'needle appears here <@U555>' });
   const worker = createWorker({
     getBotToken: async () => 'xoxb-token',
+    slackChannelInfo: async () => ({ is_private: false }),
     ddbSend: async (command) => {
       if (command.constructor.name === 'QueryCommand' && command.input.TableName === 'index-table') {
         return { Items: [{ message_pk: hit.pk, message_sk: hit.sk }] };
@@ -96,6 +97,61 @@ test('search worker posts a parent message and threaded hit details', async () =
   assert.match(slackMessages[1].text, /bob/);
   assert.doesNotMatch(slackMessages[1].text, /<@|@alice|@bob/);
   assert.match(slackMessages[1].text, /→ .*needle appears here/);
+});
+
+test('search worker hides hits from channels that are private or no longer accessible', async () => {
+  const responses = [];
+  const messages = [];
+  const worker = createWorker({
+    getBotToken: async () => 'xoxb-token',
+    ddbSend: async (command) => command.constructor.name === 'QueryCommand'
+      ? { Items: [{ message_pk: 'workspace#T123#channel#C123', message_sk: 'ts#1710000001.000000' }] }
+      : { Item: message({ ts: '1710000001.000000', text: 'needle' }) },
+    slackChannelInfo: async () => ({ is_private: true }),
+    slackPost: async ({ message }) => { messages.push(message); },
+    responsePost: async (payload) => responses.push(payload),
+  });
+
+  await worker({ body: { team_id: 'T123', channel_id: 'C999', response_url: 'https://hooks.slack.test/response', text: 'needle' } });
+  assert.equal(messages.length, 0);
+  assert.equal(responses.length, 1);
+});
+
+test('search worker does not cap the returned matches before private-channel filtering', async () => {
+  process.env.SEARCH_INDEX_TABLE = 'index-table';
+  process.env.MESSAGES_TABLE = 'messages-table';
+
+  const hits = Array.from({ length: 20 }, (_, index) => {
+    const hit = message({ ts: `171000000${index + 2}.000000`, text: `needle private ${index}` });
+    hit.channel_id = `CPRIVATE${index}`;
+    hit.pk = `workspace#T123#channel#${hit.channel_id}`;
+    return hit;
+  });
+  hits.push(message({ ts: '1710000001.000000', text: 'needle public' }));
+  const byKey = new Map(hits.map((hit) => [hit.sk, hit]));
+  const posted = [];
+  const worker = createWorker({
+    getBotToken: async () => 'xoxb-token',
+    ddbSend: async (command) => {
+      if (command.constructor.name === 'GetCommand') return { Item: byKey.get(command.input.Key.sk) };
+      if (command.input.TableName === 'index-table') {
+        return { Items: hits.map((hit) => ({ message_pk: hit.pk, message_sk: hit.sk })) };
+      }
+      return { Items: [] };
+    },
+    slackChannelInfo: async ({ channelId }) => ({ is_private: channelId !== 'C123' }),
+    slackUserInfo: async () => 'alice',
+    slackPost: async ({ message }) => {
+      posted.push(message);
+      return { ts: '1710000010.000000' };
+    },
+  });
+
+  await worker({ body: { team_id: 'T123', channel_id: 'C999', user_id: 'U123', text: 'needle' } });
+
+  assert.equal(posted.length, 2);
+  assert.match(posted[1].text, /needle public/);
+  assert.doesNotMatch(posted[1].text, /private/);
 });
 
 test('search worker reports misses through response_url', async () => {

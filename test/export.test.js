@@ -90,6 +90,11 @@ test('export creation records workspace and owner before invoking the worker', a
     verifyAuth: async () => authenticatedClaims,
     createJobId: () => 'job-1',
     now: () => new Date('2026-07-26T00:00:00.000Z'),
+    loadBotToken: async ({ teamId }) => {
+      assert.equal(teamId, 'T123');
+      return 'bot-token';
+    },
+    listChannels: async () => [{ id: 'C123', name: 'general', is_archived: false }],
     ddbSend: async (command) => {
       commands.push(command);
       if (command.constructor.name === 'QueryCommand') {
@@ -120,9 +125,25 @@ test('export creation records workspace and owner before invoking the worker', a
   assert.equal(invoked.length, 1);
 });
 
+test('export creation rejects channels no longer listed as public', async () => {
+  const handler = createExportHandler({
+    verifyAuth: async () => authenticatedClaims,
+    loadBotToken: async () => 'bot-token',
+    listChannels: async () => [],
+    ddbSend: async () => { throw new Error('private channels must not be queried'); },
+    invokeWorker: async () => { throw new Error('private channels must not export'); },
+  });
+
+  const response = await handler(jsonEvent({ channel_id: 'CPRIVATE' }));
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(JSON.parse(response.body), { error: 'channel_not_archived' });
+});
+
 test('export creation rejects channels with no messages in the authenticated workspace', async () => {
   const handler = createExportHandler({
     verifyAuth: async () => authenticatedClaims,
+    loadBotToken: async () => 'bot-token',
+    listChannels: async () => [{ id: 'CNOTFOUND', name: 'test', is_archived: false }],
     ddbSend: async () => ({ Items: [] }),
     invokeWorker: async () => {
       throw new Error('missing channels must not invoke a worker');
@@ -173,6 +194,8 @@ test('completed export status returns a short-lived download URL to its owner', 
         message_count: 2,
       },
     }),
+    loadBotToken: async () => 'bot-token',
+    listChannels: async () => [{ id: 'C1', name: 'general', is_archived: false }],
     createDownloadUrl: async (job) => {
       assert.equal(job.object_key, 'exports/T123/U_REQUESTER/job-1.csv');
       return 'https://download.example/signed';
@@ -256,6 +279,7 @@ test('export worker uploads the generated CSV and records completion metadata', 
       tempDirectory: directory,
       now: () => new Date('2026-07-26T00:00:00.000Z'),
       loadBotToken: async () => 'xoxb-token',
+      listChannels: async () => [{ id: 'C1', name: 'general', is_archived: false }],
       loadUserNames: async () => new Map([['U1', 'Alice']]),
       writeCsv: async ({ filePath, userNames }) => {
         assert.equal(userNames.get('U1'), 'Alice');
@@ -297,9 +321,8 @@ test('export worker records a bounded failure when CSV generation fails', async 
   try {
     const worker = createExportWorker({
       tempDirectory: directory,
-      loadBotToken: async () => {
-        throw new Error('Slack unavailable');
-      },
+      loadBotToken: async () => 'bot-token',
+      listChannels: async () => [{ id: 'C1', name: 'general', is_archived: false }],
       writeCsv: async () => {
         throw new Error('disk full');
       },

@@ -17,6 +17,8 @@ These values are intentionally not committed to the repository.
 | Allowed Slack workspace team IDs | Slack workspace/app metadata | Optional SAM parameter `AllowedSlackTeamIds`, comma-separated |
 | Cognito domain prefix | Deployment decision | SAM parameter `CognitoDomainPrefix` |
 | Web base URL | Existing API endpoint | SAM parameter `WebBaseUrl` |
+| MCP OAuth callback URLs | Exact redirect URLs from MCP client setup | SAM parameter `McpOAuthCallbackUrls` (comma-separated; Claude default is included) |
+| MCP browser origins | MCP client browser origin, if sent | SAM parameter `McpAllowedOrigins` (comma-separated) |
 | Slack app request URLs | SAM stack output `ApiEndpoint` | Slack app settings |
 | Slack command name | Slack app settings | `/hi-nick` |
 | Slack channel install targets | Slack workspace | Invite the app to channels to archive |
@@ -173,7 +175,9 @@ uv run sam deploy \
     SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
     AllowedSlackTeamIds="$ALLOWED_SLACK_TEAM_IDS" \
     CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
-    WebBaseUrl="$WEB_BASE_URL"
+    WebBaseUrl="$WEB_BASE_URL" \
+    McpOAuthCallbackUrls="${MCP_OAUTH_CALLBACK_URLS:-https://claude.ai/api/mcp/auth_callback}" \
+    McpAllowedOrigins="${MCP_ALLOWED_ORIGINS:-https://claude.ai,https://chatgpt.com}"
 ```
 
 Recommended guided values:
@@ -187,7 +191,7 @@ Recommended guided values:
 | Disable rollback | `N` |
 | Save arguments to samconfig.toml | `Y` |
 
-After deployment, capture the `ApiEndpoint` output.
+After deployment, capture the `ApiEndpoint` output. The stack pins Cognito to Essentials for resource binding; upgrading an existing Lite pool may increase charges, so confirm pricing before deployment. Switching the shared Hosted UI domain to Managed Login v2 expires existing Hosted UI sessions.
 
 ## Slack endpoint URLs
 
@@ -212,6 +216,10 @@ Region: ap-northeast-1
 ApiEndpoint: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com
 WebUrl: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/web
 CognitoSlackCallbackUrl: https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
+McpOAuthClientId: <COGNITO_MCP_CLIENT_ID>
+McpResourceUrl: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/mcp
+McpReadScope: https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/mcp/read
+McpOAuthDiscoveryUrl: https://cognito-idp.ap-northeast-1.amazonaws.com/<USER_POOL_ID>/.well-known/openid-configuration
 AllowedSlackTeamIds: <ALLOWED_SLACK_TEAM_IDS>
 ```
 
@@ -224,7 +232,8 @@ After configuring Slack:
 3. Run `/hi-nick <word from the test message>`.
 4. Confirm the command returns the archived message.
 5. Open `WebUrl`, sign in with Slack, and search for the same word.
-6. Check CloudWatch Logs only if Slack returns an error or the Web UI search fails.
+6. Follow the real Cognito OAuth and MCP client checks in [mcp.md](mcp.md#manual-oauth-verification) before sharing the endpoint.
+7. Check CloudWatch Logs only if Slack returns an error or an API/MCP request fails.
 
 Basic unauthenticated Web API check:
 
@@ -256,10 +265,8 @@ Multi-tenant migration note: the `slack_search_index` partition key changed from
 Known follow-up tasks:
 
 - Add explicit CloudWatch log retention resources.
-- Add duplicate-event handling using Slack `event_id`.
-- Add message edit/delete handling.
-- Add pagination or better ranking for search results.
 - Decide whether DynamoDB billing should remain on-demand or move to provisioned capacity for stricter free-tier alignment.
+- Validate the Cognito resource-bound access-token flow with each production MCP client; CI cannot complete the external Slack OIDC login.
 
 ## Channel export resources
 

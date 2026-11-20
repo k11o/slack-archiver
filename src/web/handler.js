@@ -7,6 +7,7 @@ const {
   formatSlackMessageText,
   loadMessageContext,
   searchMessages,
+  MAX_HITS,
 } = require('../search/handler');
 const {
   authenticateWebRequest,
@@ -14,6 +15,7 @@ const {
   verifyCognitoJwt,
 } = require('./auth');
 const { formatWorkspaceLabel } = require('./workspace');
+const { listSlackChannels } = require('../export/handler');
 
 const workspaceScript = fs.readFileSync(path.join(__dirname, 'workspace.js'), 'utf8');
 
@@ -21,7 +23,6 @@ const ssm = new SSMClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const botTokenCache = new Map();
 const userCache = new Map();
-const channelCache = new Map();
 
 async function getBotToken({ teamId } = {}) {
   const paramName = getBotTokenParamName(teamId);
@@ -47,11 +48,13 @@ exports.page = async () => html(renderPage({
   searchUrl: process.env.WEB_SEARCH_URL,
   channelsUrl: process.env.WEB_CHANNELS_URL,
   exportsUrl: process.env.WEB_EXPORTS_URL,
+  messageUrl: process.env.WEB_AI_MESSAGE_URL,
 }));
 
 function createSearchHandler({
   allowedSlackTeamIds,
   getBotToken: loadBotToken,
+  listChannels = listSlackChannels,
   ddbSend,
   verifyAuth = verifyCognitoJwt,
   search = searchMessages,
@@ -72,20 +75,28 @@ function createSearchHandler({
 
     const botToken = await loadBotToken({ teamId });
     const hits = await search({ query, teamId, ddbSend });
+    const channelNames = new Map(hits.length
+      ? (await listChannels({ botToken })).map((channel) => [channel.id, channel.name])
+      : []);
 
     const results = [];
     for (const hit of hits) {
+      if (!channelNames.has(hit.channel_id)) continue;
       const context = await loadContext({ message: hit, ddbSend });
-      results.push(await formatResult({ botToken, teamId, hit, context }));
+      const result = await formatResult({ botToken, teamId, hit, context, channelNames });
+      if (result) results.push(result);
+      if (results.length >= MAX_HITS) break;
     }
 
     return json({ results });
   };
 }
 
-async function formatWebResult({ botToken, teamId, hit, context }) {
+async function formatWebResult({ botToken, teamId, hit, context, channelNames }) {
+  const name = channelNames?.get(hit.channel_id);
+  if (!name) return null;
   const userNames = await loadUserNames({ botToken, teamId, messages: context });
-  const channelName = await resolveChannelName({ botToken, teamId, channelId: hit.channel_id });
+  const channelName = `#${name}`;
 
   return {
     channel_id: hit.channel_id,
@@ -144,21 +155,6 @@ async function resolveUserName({ botToken, teamId, userId }) {
   const sanitized = sanitizeDisplayName(name);
   userCache.set(cacheKey, sanitized);
   return sanitized;
-}
-
-async function resolveChannelName({ botToken, teamId, channelId }) {
-  if (!channelId) return '(unknown channel)';
-  const cacheKey = `${teamId || ''}:${channelId}`;
-  if (channelCache.has(cacheKey)) return channelCache.get(cacheKey);
-
-  const payload = await slackApi({
-    botToken,
-    method: 'conversations.info',
-    params: { channel: channelId },
-  });
-  const name = payload.channel?.name ? `#${payload.channel.name}` : channelId;
-  channelCache.set(cacheKey, name);
-  return name;
 }
 
 async function slackApi({ botToken, method, params }) {
@@ -265,6 +261,7 @@ function renderPage(config) {
     const tokenKey = "slackArchiverTokens";
     const verifierKey = "slackArchiverPkceVerifier";
     const stateKey = "slackArchiverOauthState";
+    const deepLinkKey = "slackArchiverDeepLink";
 
     const signedOut = document.getElementById("signedOut");
     const signedIn = document.getElementById("signedIn");
@@ -291,6 +288,11 @@ function renderPage(config) {
 
     async function init() {
       const params = new URLSearchParams(window.location.search);
+      const channelId = params.get("channel_id");
+      const ts = params.get("ts");
+      if (/^C[A-Z0-9]{2,}$/.test(channelId || "") && /^\\d{1,12}\\.\\d{6}$/.test(ts || "")) {
+        sessionStorage.setItem(deepLinkKey, JSON.stringify({ channelId, ts }));
+      }
       if (params.has("code")) {
         const expectedState = sessionStorage.getItem(stateKey);
         const returnedState = params.get("state");
@@ -305,6 +307,12 @@ function renderPage(config) {
         history.replaceState({}, document.title, "/web");
       }
       renderAuthState();
+      const tokens = getTokens();
+      const deepLink = sessionStorage.getItem(deepLinkKey);
+      if (tokens?.id_token && deepLink) {
+        sessionStorage.removeItem(deepLinkKey);
+        await loadArchivedMessage(JSON.parse(deepLink));
+      }
     }
 
     function renderAuthState() {
@@ -381,6 +389,39 @@ function renderPage(config) {
       }
       const payload = await response.json();
       renderResults(payload.results || []);
+    }
+
+    async function loadArchivedMessage({ channelId, ts }) {
+      const tokens = getTokens();
+      statusEl.textContent = "Loading archived message...";
+      try {
+        const url = config.messageUrl + "/" + encodeURIComponent(channelId) + "/" + encodeURIComponent(ts);
+        const response = await fetch(url, { headers: { authorization: "Bearer " + tokens.id_token } });
+        if (response.status === 401 || response.status === 403) {
+          statusEl.textContent = "Authentication failed. Please sign in again.";
+          return;
+        }
+        if (!response.ok) {
+          statusEl.textContent = "This archived message is no longer available.";
+          return;
+        }
+        const message = (await response.json()).message;
+        renderResults([{
+          channel_name: "#" + message.channel_name,
+          user_name: message.user_name,
+          time: message.time,
+          ts: message.ts,
+          context: [{
+            is_hit: true,
+            user_name: message.user_name,
+            time: message.time,
+            text: message.text,
+          }],
+        }]);
+        statusEl.textContent = "Archived message";
+      } catch {
+        statusEl.textContent = "Could not load the archived message.";
+      }
     }
 
     function renderResults(results) {
@@ -584,6 +625,7 @@ function json(body, statusCode = 200) {
 exports.renderPage = renderPage;
 exports.createSearchHandler = createSearchHandler;
 exports.formatWebResult = formatWebResult;
+exports.loadUserNames = loadUserNames;
 exports.resolveTeamId = resolveTeamId;
 exports.search = createSearchHandler({
   allowedSlackTeamIds: process.env.ALLOWED_SLACK_TEAM_IDS,

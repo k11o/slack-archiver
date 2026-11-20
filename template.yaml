@@ -20,7 +20,16 @@ Parameters:
     Description: Globally unique Cognito Hosted UI domain prefix.
   WebBaseUrl:
     Type: String
-    Description: Public API Gateway base URL that serves the web UI, for example https://example.execute-api.ap-northeast-1.amazonaws.com.
+    AllowedPattern: '^https://[a-z0-9.-]+$'
+    Description: Public API Gateway origin without a trailing slash, for example https://example.execute-api.ap-northeast-1.amazonaws.com.
+  McpOAuthCallbackUrls:
+    Type: CommaDelimitedList
+    Default: https://claude.ai/api/mcp/auth_callback
+    Description: Exact OAuth callback URLs registered for supported MCP clients.
+  McpAllowedOrigins:
+    Type: String
+    Default: https://claude.ai,https://chatgpt.com
+    Description: Comma-separated browser origins allowed to call the MCP endpoint.
 
 Globals:
   Function:
@@ -39,6 +48,25 @@ Globals:
 Resources:
   Api:
     Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: !Split [',', !Ref McpAllowedOrigins]
+        AllowHeaders:
+          - authorization
+          - content-type
+          - accept
+          - mcp-protocol-version
+          - mcp-session-id
+          - last-event-id
+        AllowMethods:
+          - GET
+          - POST
+          - DELETE
+          - OPTIONS
+        ExposeHeaders:
+          - mcp-session-id
+          - www-authenticate
+        MaxAge: 600
 
   IngestFunction:
     Type: AWS::Serverless::Function
@@ -135,6 +163,7 @@ Resources:
           WEB_SEARCH_URL: !Sub '${WebBaseUrl}/api/search'
           WEB_CHANNELS_URL: !Sub '${WebBaseUrl}/api/channels'
           WEB_EXPORTS_URL: !Sub '${WebBaseUrl}/api/exports'
+          WEB_AI_MESSAGE_URL: !Sub '${WebBaseUrl}/api/ai/messages'
       Events:
         WebRoot:
           Type: HttpApi
@@ -173,6 +202,105 @@ Resources:
           Properties:
             ApiId: !Ref Api
             Path: /api/search
+            Method: GET
+
+  AiApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/ai/handler.main
+      Timeout: 30
+      Environment:
+        Variables:
+          ALLOWED_SLACK_TEAM_IDS: !Ref AllowedSlackTeamIds
+          WEB_BASE_URL: !Ref WebBaseUrl
+          COGNITO_ISSUER: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${WebUserPool}'
+          COGNITO_CLIENT_ID: !Ref WebUserPoolClient
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SearchIndexTable
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/workspaces/*/slack-bot-token
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/slack-signing-secret
+      Events:
+        AiSearch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/ai/search
+            Method: POST
+        AiMessage:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/ai/messages/{channel_id}/{ts}
+            Method: GET
+        AiThread:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/ai/threads/{channel_id}/{root_ts}
+            Method: GET
+        AiChannels:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /api/ai/channels
+            Method: GET
+
+  McpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/mcp/handler.main
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          ALLOWED_SLACK_TEAM_IDS: !Ref AllowedSlackTeamIds
+          WEB_BASE_URL: !Ref WebBaseUrl
+          COGNITO_DOMAIN: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
+          COGNITO_ISSUER: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${WebUserPool}'
+          COGNITO_MCP_CLIENT_ID: !Ref McpUserPoolClient
+          MCP_BASE_URL: !Sub '${WebBaseUrl}/mcp'
+          MCP_READ_SCOPE: !Sub '${WebBaseUrl}/mcp/read'
+          MCP_ALLOWED_ORIGINS: !Ref McpAllowedOrigins
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MessagesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SearchIndexTable
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/workspaces/*/slack-bot-token
+        - SSMParameterReadPolicy:
+            ParameterName: slack-archiver/slack-signing-secret
+      Events:
+        McpPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /mcp
+            Method: POST
+        McpGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /mcp
+            Method: GET
+        McpDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /mcp
+            Method: DELETE
+        McpResourceMetadata:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /.well-known/oauth-protected-resource/mcp
             Method: GET
 
   WebExportApiFunction:
@@ -247,6 +375,7 @@ Resources:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: slack-archiver-web
+      UserPoolTier: ESSENTIALS
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
       Schema:
@@ -271,6 +400,7 @@ Resources:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
       Domain: !Ref CognitoDomainPrefix
+      ManagedLoginVersion: 2
       UserPoolId: !Ref WebUserPool
 
   WebUserPoolSlackProvider:
@@ -291,6 +421,71 @@ Resources:
         custom:slack_team_id: https://slack.com/team_id
         custom:slack_user_id: https://slack.com/user_id
         custom:slack_team_name: https://slack.com/team_name
+
+  WebManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    DependsOn: WebUserPoolDomain
+    Properties:
+      UserPoolId: !Ref WebUserPool
+      ClientId: !Ref WebUserPoolClient
+      UseCognitoProvidedValues: true
+
+  McpManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    DependsOn: WebUserPoolDomain
+    Properties:
+      UserPoolId: !Ref WebUserPool
+      ClientId: !Ref McpUserPoolClient
+      UseCognitoProvidedValues: true
+
+  McpResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref WebUserPool
+      Identifier: !Sub '${WebBaseUrl}/mcp'
+      Name: Slack Archiver MCP
+      Scopes:
+        - ScopeName: read
+          ScopeDescription: Read archived public-channel Slack messages
+
+  McpUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn:
+      - WebUserPoolSlackProvider
+      - McpResourceServer
+    Properties:
+      UserPoolId: !Ref WebUserPool
+      ClientName: slack-archiver-mcp
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - Slack
+      AllowedOAuthFlowsUserPoolClient: true
+      RefreshTokenRotation:
+        Feature: ENABLED
+        RetryGracePeriodSeconds: 5
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+        - !Sub '${WebBaseUrl}/mcp/read'
+      CallbackURLs: !Ref McpOAuthCallbackUrls
+      LogoutURLs:
+        - !Sub '${WebBaseUrl}/web'
+      ReadAttributes:
+        - email
+        - name
+        - custom:slack_team_id
+        - custom:slack_user_id
+        - custom:slack_team_name
+      WriteAttributes:
+        - email
+        - name
+        - custom:slack_team_id
+        - custom:slack_user_id
+        - custom:slack_team_name
 
   WebUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -399,6 +594,18 @@ Outputs:
   CognitoSlackCallbackUrl:
     Description: Slack OIDC redirect URL to configure in the Slack app for Web UI login
     Value: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse'
+  McpOAuthClientId:
+    Description: Public Cognito app client ID to configure in an MCP client
+    Value: !Ref McpUserPoolClient
+  McpResourceUrl:
+    Description: Streamable HTTP MCP endpoint and OAuth resource indicator
+    Value: !Sub '${WebBaseUrl}/mcp'
+  McpReadScope:
+    Description: Cognito OAuth scope required to access the MCP endpoint
+    Value: !Sub '${WebBaseUrl}/mcp/read'
+  McpOAuthDiscoveryUrl:
+    Description: Cognito OIDC discovery document for MCP OAuth clients
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${WebUserPool}/.well-known/openid-configuration'
   SlackInstallRedirectUrl:
     Description: Redirect URL to configure in the Slack app OAuth & Permissions for bot install from the Manage Distribution page
     Value: !Sub '${WebBaseUrl}/slack/install'

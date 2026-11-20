@@ -113,7 +113,7 @@ https://<cognito-domain>/oauth2/idpresponse
 https://<COGNITO_DOMAIN_PREFIX>.auth.ap-northeast-1.amazoncognito.com/oauth2/idpresponse
 ```
 
-- This URL coexists with the bot install redirect URL (`<API_ENDPOINT>/slack/install`) in the same **OAuth & Permissions > Redirect URLs** list. Both are required: the Cognito URL for Web UI OIDC login, and the bot install URL for "Install to another workspace" from Manage Distribution.
+- This URL coexists with the bot install redirect URL (`<API_ENDPOINT>/slack/install`) in the same **OAuth & Permissions > Redirect URLs** list. Both are required: the Cognito URL for Web UI OIDC login, and the bot install URL for "Install to another workspace" from Manage Distribution. MCP client callback URLs are configured on the separate Cognito MCP app client; do not add those client callbacks to Slack's redirect URL list.
 - Add the web app logout URL when the frontend exists.
 - Record the Slack OIDC Client ID and Client Secret in AWS secrets storage. The deployment command reads those values and passes them as CloudFormation parameters.
 

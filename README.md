@@ -16,26 +16,27 @@ AWS Lambda
 Amazon DynamoDB
 ```
 
-Web frontend:
+Web frontend and AI API:
 
 ```text
-API Gateway HTTP API /web
+API Gateway HTTP API /web and /api/ai/*
         ↓
 Cognito Hosted UI with Slack Sign in
         ↓
-Web API Lambda verifies Cognito JWT and Slack workspace claim
-        ↓
-Lambda search API
+Lambda verifies the authenticated Slack workspace and searches DynamoDB
 ```
+
+MCP clients use a separate Cognito OAuth access token and the stateless Streamable HTTP endpoint at `/mcp`.
 
 ## Initial scope
 
-- Receive Slack message events.
+- Receive Slack message, edit, and delete events.
 - Verify Slack request signatures.
 - Store normalized message records in DynamoDB.
 - Build a simple n-gram search index for Japanese and English text.
 - Search from a Slack slash command.
-- Search from a Slack-authenticated web UI.
+- Search from a Slack-authenticated web UI and the read-only AI search API.
+- Expose read-only archive tools through Streamable HTTP MCP.
 - Export one public channel's archived messages from the Web UI as CSV.
 - Avoid EC2 and always-on compute.
 
@@ -59,6 +60,7 @@ docs/
   deployment.md
   export-channel-messages.md
   import-slack-export.md
+  mcp.md
   slack-app.md
 src/
   common/
@@ -80,7 +82,8 @@ For implementation and deployment work, read in this order:
 7. `docs/data-model.md`
 8. `docs/import-slack-export.md`
 9. `docs/export-channel-messages.md`
-10. `template.yaml`
+10. `docs/mcp.md`
+11. `template.yaml`
 
 ## Required external inputs
 
@@ -123,4 +126,4 @@ Before deployment, store Slack secrets in SSM Parameter Store:
 
 Slack-facing endpoints use Slack request signature verification.
 
-The web app uses Cognito Hosted UI with Slack Sign in as an external OIDC provider. The Web API Lambda verifies Cognito JWTs and scopes every search to the Slack `team_id` claim from the logged-in user. If an allowed-team list is configured, users outside that list are rejected. Do not implement custom password storage.
+The web app uses Cognito Hosted UI with Slack Sign in as an external OIDC provider. Web API routes use the authenticated Slack `team_id` claim. MCP uses a separate Cognito OAuth app client and resource-bound access tokens; the server resolves the workspace through Cognito UserInfo and ignores client-supplied team IDs. If an allowed-team list is configured, users outside that list are rejected. Do not implement custom password storage.

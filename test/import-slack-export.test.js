@@ -10,6 +10,8 @@ const {
   isIgnoredExportMessage,
   buildMessageItem,
   buildIndexWriteRequests,
+  batchWrite,
+  putNewMessages,
   importSlackExport,
 } = require('../scripts/import-slack-export');
 
@@ -102,6 +104,24 @@ test('isIgnoredExportMessage matches current live ingest filtering', () => {
   assert.equal(isIgnoredExportMessage({ type: 'file' }), true);
 });
 
+test('importSlackExport skips channels marked private in Slack export metadata', async () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-private-export-'));
+  writeJson(path.join(source, 'channels.json'), [{ id: 'C_PRIVATE', name: 'private', is_private: true }]);
+  writeJson(path.join(source, 'users.json'), [{ id: 'U1', team_id: 'T123' }]);
+  writeJson(path.join(source, 'private', '2026-06-30.json'), [
+    { type: 'message', user: 'U1', team: 'T123', ts: '1782803731.223699', text: 'secret' },
+  ]);
+  const result = await importSlackExport({
+    ddb: { send: async () => { throw new Error('private channel must not be written'); } },
+    source,
+    messagesTable: 'messages',
+    indexTable: 'index',
+  });
+
+  assert.equal(result.imported, 0);
+  assert.equal(result.skippedMissingChannel, 1);
+});
+
 test('buildMessageItem and buildIndexWriteRequests use existing table keys', () => {
   const item = buildMessageItem({
     teamId: 'T123',
@@ -118,6 +138,14 @@ test('buildMessageItem and buildIndexWriteRequests use existing table keys', () 
   assert.equal(item.sk, 'ts#1782803731.223699');
   assert.equal(item.channel_name, 'general');
   assert.equal(item.import_source, 'slack_export');
+  assert.equal(item.revision_ts, Number.parseFloat(item.ts));
+  const edited = buildMessageItem({
+    teamId: 'T123',
+    channel: { id: 'C1', name: 'general' },
+    message: { ts: item.ts, edited: { ts: '1782803732.000000' }, text: 'edited' },
+  });
+  assert.equal(edited.revision_ts, 1782803732);
+  assert.deepEqual(item.search_tokens, item.index_tokens);
 
   const indexItems = buildIndexWriteRequests(item).map((request) => request.PutRequest.Item);
   assert.ok(indexItems.some((entry) => entry.pk === 'workspace#T123#token#needle'));
@@ -155,12 +183,49 @@ test('importSlackExport imports only new human messages and skips duplicates', a
   assert.equal(result.skippedDuplicate, 2);
   assert.ok(result.indexWritten > 0);
 
-  const messageWrites = sent
-    .filter((command) => command.constructor.name === 'BatchWriteCommand')
-    .filter((command) => command.input.RequestItems.messages)
-    .flatMap((command) => command.input.RequestItems.messages);
+  const messageWrites = sent.filter((command) => command.constructor.name === 'PutCommand');
   assert.equal(messageWrites.length, 1);
-  assert.equal(messageWrites[0].PutRequest.Item.text, 'hello import needle');
+  assert.equal(messageWrites[0].input.Item.text, 'hello import needle');
+  assert.equal(messageWrites[0].input.ConditionExpression, 'attribute_not_exists(pk)');
+});
+
+test('conditional import skips a tombstone created after the duplicate check', async () => {
+  const inserted = await putNewMessages({
+    ddb: {
+      send: async () => {
+        throw Object.assign(new Error('already exists'), { name: 'ConditionalCheckFailedException' });
+      },
+    },
+    tableName: 'messages',
+    items: [buildMessageItem({
+      teamId: 'T123',
+      channel: { id: 'C1', name: 'general' },
+      message: { ts: '1782803731.223699', user: 'U1', text: 'old content' },
+    })],
+  });
+
+  assert.deepEqual(inserted, []);
+});
+
+test('batchWrite retries unprocessed index entries', async () => {
+  let calls = 0;
+  const request = { PutRequest: { Item: { pk: 'p', sk: 's' } } };
+  const written = await batchWrite({
+    ddb: {
+      send: async () => {
+        calls += 1;
+        return calls === 1 ? { UnprocessedItems: { index: [request] } } : {};
+      },
+    },
+    tableName: 'index',
+    requests: [request],
+    dryRun: false,
+    label: 'index',
+    sleep: async () => {},
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(written, 1);
 });
 
 test('importSlackExport dry-run dedupes but does not write', async () => {
