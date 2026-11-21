@@ -17,7 +17,9 @@
     "@aws-sdk/client-ssm": "^3.1168.0",
     "@aws-sdk/lib-dynamodb": "^3.1168.0",
     "@aws-sdk/s3-request-presigner": "^3.1168.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "jose": "^6.2.17",
-    "node-emoji": "^2.2.0"
+    "node-emoji": "^2.2.0",
+    "zod": "^4.6.7"
   }
 }

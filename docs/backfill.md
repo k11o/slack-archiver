@@ -13,6 +13,7 @@ After deploying the multi-tenant code, the search Lambda only queries the new `w
 ## Prerequisites
 
 - AWS CLI authenticated to the target account (`aws sts get-caller-identity`).
+- Distinct `slack_messages` and `slack_search_index` table names; the script refuses to run a reindex against the same table.
 - `npm install` has been run in the repository.
 - The multi-tenant code is deployed (`uv run sam deploy`).
 - The `slack_messages` table still contains the archived messages. The backfill re-tokenizes from that table, so it does not depend on the old index entries being intact.
@@ -44,9 +45,9 @@ The backfill script reads AWS credentials from the standard SDK credential chain
 
 ## Rebuild the index (reindex mode)
 
-`reindex` scans `slack_messages`, re-tokenizes each message with the same `src/common/text.js` logic used by the ingest Lambda, and writes workspace-scoped entries to `slack_search_index`.
+`reindex` scans `slack_messages`, re-tokenizes each non-deleted message with the same `src/common/text.js` logic used by the ingest Lambda, and reconciles workspace-scoped entries in `slack_search_index`. A complete run also removes stale index rows, including rows for deleted messages and tokens from pre-edit text, and removes the pending `index_tokens` attribute from tombstones. It never deletes message records; tombstones remain in `slack_messages`. Message index writes and stale-row deletions use revision-conditional transactions, so a concurrent edit or delete causes the repair to retry against the current revision instead of overwriting it. A failed run can be safely repeated.
 
-It is idempotent: re-running overwrites the same `pk`/`sk` entries. Messages with no extractable tokens (empty text, missing `team_id`/`channel_id`/`ts`) are skipped.
+It is safe to re-run. Messages with no extractable tokens (empty text, missing `team_id`/`channel_id`/`ts`) are skipped. A `--limit` run is only a smoke test and deliberately does not delete stale entries because it has not seen the complete message set.
 
 ### Dry run first
 
@@ -124,7 +125,8 @@ After `cleanup-old`:
 ## Safety notes
 
 - Run `reindex` before `cleanup-old`. Deleting legacy entries before rebuilding would leave a window where neither old nor new queries match.
-- The script uses `BatchWriteItem` with 25-item batches and retries are handled by the SDK. For very large tables, consider running it during a low-traffic window.
-- The script does not modify the `slack_messages` table. Source data is never deleted.
+- Reindex reconciles each message against its current revision and guards stale-row deletion with a transaction, so live edits and deletes are not clobbered. A message created after the message scan is indexed by normal ingest; if that write fails, Slack retries the event. Repeat a failed or interrupted reindex to finish the repair. Do not combine `--limit` with a full repair run.
+- A full reindex updates `slack_messages.index_tokens` on tombstones and therefore requires read/write access to both `slack_messages` and `slack_search_index`. It never deletes message records.
+- The script never deletes message records or changes their archived content. Reindex may update `index_tokens` on tombstones.
 - `--dry-run` performs read scans only; it never writes or deletes.
 - The script is safe to re-run. `reindex` overwrites; `cleanup-old` is a no-op once no `token#` entries remain.

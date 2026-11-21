@@ -53,8 +53,10 @@ The worker:
 5. uploads the CSV to the private export bucket;
 6. marks the job as completed.
 
-The browser polls `GET /api/exports/{jobId}`. A completed response contains a
-15-minute S3 presigned download URL.
+The browser polls `GET /api/exports/{jobId}`. Before returning a completed
+export's 15-minute S3 presigned URL, the API compares the current archived
+messages with the CSV snapshot. If a message was edited or deleted after export,
+the API withholds the URL and asks the user to create a fresh export.
 
 ## Access control and retention
 

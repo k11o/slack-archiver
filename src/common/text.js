@@ -7,11 +7,19 @@ function normalizeText(input) {
 }
 
 function tokenize(input) {
+  return tokenizeWith(input, isIndexableToken);
+}
+
+function tokenizeLegacy(input) {
+  return tokenizeWith(input, () => true);
+}
+
+function tokenizeWith(input, accepts) {
   const text = normalizeText(input);
   const tokens = new Set();
 
   for (const match of text.matchAll(/[a-z0-9_./:#@-]{2,}/g)) {
-    tokens.add(match[0]);
+    if (accepts(match[0])) tokens.add(match[0]);
   }
 
   const japanese = text.replace(/[a-z0-9_./:#@\s-]/g, '');
@@ -22,4 +30,9 @@ function tokenize(input) {
   return [...tokens].slice(0, 100);
 }
 
-module.exports = { normalizeText, tokenize };
+function isIndexableToken(token) {
+  // shortcut: tokens over 1 KiB are skipped; hash them if long literals need searchable coverage.
+  return typeof token === 'string' && Buffer.byteLength(token) <= 1024;
+}
+
+module.exports = { normalizeText, tokenize, tokenizeLegacy, isIndexableToken };

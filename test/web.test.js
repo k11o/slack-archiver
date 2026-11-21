@@ -46,6 +46,19 @@ test('web search rejects users outside the optional Slack workspace allowlist', 
   assert.deepEqual(JSON.parse(response.body), { error: 'forbidden_workspace' });
 });
 
+test('web search reports channel-visibility failures instead of returning false misses', async () => {
+  const handler = createSearchHandler({
+    getBotToken: async () => 'xoxb-token',
+    listChannels: async () => { throw new Error('Slack temporarily unavailable'); },
+    ddbSend: async () => { throw new Error('search must not run without visibility'); },
+    verifyAuth: async () => ({ 'custom:slack_team_id': 'T_LOGIN' }),
+  });
+
+  const response = await handler(eventWithQuery({ q: 'hello' }));
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(JSON.parse(response.body), { error: 'channel_visibility_unavailable' });
+});
+
 test('web search scopes results to the logged-in Slack workspace', async () => {
   const hit = message({ ts: '1710000001.000000', text: 'hello world' });
   const handler = createSearchHandler({
@@ -53,6 +66,7 @@ test('web search scopes results to the logged-in Slack workspace', async () => {
       assert.equal(teamId, 'T_LOGIN');
       return 'xoxb-token';
     },
+    listChannels: async () => [{ id: 'C123', name: 'general' }],
     ddbSend: async () => null,
     verifyAuth: async () => ({ 'custom:slack_team_id': 'T_LOGIN' }),
     search: async ({ query, teamId }) => {
@@ -77,6 +91,7 @@ test('web search scopes results to the logged-in Slack workspace', async () => {
   assert.equal(body.results.length, 1);
   assert.equal(body.results[0].channel_name, '#general');
   assert.equal(body.results[0].user_name, 'alice');
+  assert.equal(body.search_incomplete, false);
 });
 
 test('web search scopes results using the namespaced team_id claim', async () => {
@@ -86,6 +101,7 @@ test('web search scopes results using the namespaced team_id claim', async () =>
       assert.equal(teamId, 'T_NS');
       return 'xoxb-token';
     },
+    listChannels: async () => [{ id: 'C123', name: 'general' }],
     ddbSend: async () => null,
     verifyAuth: async () => ({ 'https://slack.com/team_id': 'T_NS' }),
     search: async ({ query, teamId }) => {
@@ -106,6 +122,33 @@ test('web search scopes results using the namespaced team_id claim', async () =>
   const response = await handler(eventWithQuery({ q: 'hello' }));
   assert.equal(response.statusCode, 200);
   assert.equal(JSON.parse(response.body).results.length, 1);
+});
+
+test('web search skips private hits before applying the result limit', async () => {
+  const hits = Array.from({ length: 5 }, (_, index) => ({
+    ...message({ ts: `171000000${index}.000000`, text: `private ${index}` }),
+    channel_id: `C_PRIVATE${index}`,
+  }));
+  hits.push(message({ ts: '1710000006.000000', text: 'public hit' }));
+  const formattedHits = [];
+  const handler = createSearchHandler({
+    getBotToken: async () => 'xoxb-token',
+    listChannels: async () => [{ id: 'C123', name: 'general' }],
+    ddbSend: async () => null,
+    verifyAuth: async () => ({ 'custom:slack_team_id': 'T_LOGIN' }),
+    search: async () => hits,
+    loadContext: async ({ message: hit }) => [hit],
+    formatResult: async ({ hit }) => {
+      formattedHits.push(hit.text);
+      return { text: hit.text };
+    },
+  });
+
+  const response = await handler(eventWithQuery({ q: 'needle' }));
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body).results, [{ text: 'public hit' }]);
+  assert.deepEqual(formattedHits, ['public hit']);
 });
 
 test('web search rejects mismatched team claims before any DynamoDB call', async () => {
@@ -154,6 +197,7 @@ test('renderPage includes Cognito and API configuration', () => {
     searchUrl: 'https://api.example/api/search',
     channelsUrl: 'https://api.example/api/channels',
     exportsUrl: 'https://api.example/api/exports',
+    messageUrl: 'https://api.example/api/ai/messages',
   });
 
   assert.match(page, /Slack Archiver/);
@@ -162,6 +206,9 @@ test('renderPage includes Cognito and API configuration', () => {
   assert.match(page, /https:\/\/api\.example\/api\/search/);
   assert.match(page, /https:\/\/api\.example\/api\/channels/);
   assert.match(page, /https:\/\/api\.example\/api\/exports/);
+  assert.match(page, /https:\/\/api\.example\/api\/ai\/messages/);
+  assert.match(page, /slackArchiverDeepLink/);
+  assert.match(page, /loadArchivedMessage/);
   assert.match(page, /Export channel messages/);
   assert.match(page, /Create CSV/);
 });

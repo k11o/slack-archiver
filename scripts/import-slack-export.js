@@ -5,11 +5,11 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const {
   DynamoDBDocumentClient,
   BatchGetCommand,
-  BatchWriteCommand,
+  PutCommand,
 } = require('@aws-sdk/lib-dynamodb');
-const { normalizeText, tokenize } = require('../src/common/text');
+const { normalizeText, tokenize, isIndexableToken } = require('../src/common/text');
+const { reconcileSearchIndex } = require('../src/ingest/handler');
 
-const MAX_BATCH_WRITE = 25;
 const MAX_BATCH_GET = 100;
 
 function parseArgs(argv) {
@@ -99,7 +99,7 @@ function loadChannelMap({ source, entries }) {
   const channels = readJson(source, channelsEntry.name);
   const byName = new Map();
   for (const channel of channels) {
-    if (channel && channel.name && channel.id) byName.set(channel.name, channel);
+    if (channel && channel.name && channel.id && channel.is_private !== true) byName.set(channel.name, channel);
   }
   return byName;
 }
@@ -140,6 +140,7 @@ function isIgnoredExportMessage(message) {
 function buildMessageItem({ message, teamId, channel }) {
   const ts = message.ts;
   const text = message.text || '';
+  const searchTokens = tokenize(text);
   const now = new Date().toISOString();
   const pk = `workspace#${teamId}#channel#${channel.id}`;
   const sk = `ts#${ts}`;
@@ -159,6 +160,9 @@ function buildMessageItem({ message, teamId, channel }) {
     thread_ts: message.thread_ts || null,
     text,
     normalized_text: normalizeText(text),
+    search_tokens: searchTokens,
+    index_tokens: searchTokens,
+    revision_ts: Number.parseFloat(message.edited?.ts || ts) || 0,
     client_msg_id: message.client_msg_id || null,
     event_id: null,
     deleted: false,
@@ -169,7 +173,7 @@ function buildMessageItem({ message, teamId, channel }) {
 }
 
 function buildIndexWriteRequests(message) {
-  return tokenize(message.text).map((token) => ({
+  return tokenize(message.text).filter(isIndexableToken).map((token) => ({
     PutRequest: {
       Item: {
         pk: `workspace#${message.team_id}#token#${token}`,
@@ -179,6 +183,7 @@ function buildIndexWriteRequests(message) {
         message_pk: message.pk,
         message_sk: message.sk,
         ts: message.ts,
+        revision_ts: message.revision_ts || Number.parseFloat(message.ts) || 0,
       },
     },
   }));
@@ -217,24 +222,22 @@ async function batchGetExistingKeys({ ddb, tableName, keys }) {
   return existing;
 }
 
-async function batchWrite({ ddb, tableName, requests, dryRun, label }) {
-  let written = 0;
-  for (let i = 0; i < requests.length; i += MAX_BATCH_WRITE) {
-    let chunk = requests.slice(i, i + MAX_BATCH_WRITE);
-    if (dryRun) {
-      written += chunk.length;
-    } else {
-      do {
-        const response = await ddb.send(new BatchWriteCommand({ RequestItems: { [tableName]: chunk } }));
-        written += chunk.length - (response.UnprocessedItems?.[tableName]?.length || 0);
-        chunk = response.UnprocessedItems?.[tableName] || [];
-      } while (chunk.length);
-    }
-    if (written % 250 === 0 || i + MAX_BATCH_WRITE >= requests.length) {
-      process.stderr.write(`${label}: ${written}/${requests.length}\n`);
+async function putNewMessages({ ddb, tableName, items, dryRun }) {
+  if (dryRun) return items;
+  const inserted = [];
+  for (const item of items) {
+    try {
+      await ddb.send(new PutCommand({
+        TableName: tableName,
+        Item: item,
+        ConditionExpression: 'attribute_not_exists(pk)',
+      }));
+      inserted.push(item);
+    } catch (error) {
+      if (error.name !== 'ConditionalCheckFailedException') throw error;
     }
   }
-  return written;
+  return inserted;
 }
 
 async function importSlackExport({
@@ -299,27 +302,34 @@ async function importSlackExport({
     });
     const newMessages = uniqueCandidates.filter((item) => !existing.has(`${item.pk}\0${item.sk}`));
     stats.skippedDuplicate += uniqueCandidates.length - newMessages.length;
-    if (!newMessages.length) continue;
 
-    const messageRequests = newMessages.map((item) => ({ PutRequest: { Item: item } }));
-    await batchWrite({ ddb, tableName: messagesTable, requests: messageRequests, dryRun, label: 'messages' });
-    stats.imported += newMessages.length;
-
-    const indexRequests = [];
-    for (const message of newMessages) {
-      for (const request of buildIndexWriteRequests(message)) indexRequests.push(request);
-    }
-    const { unique: uniqueIndexRequests } = uniqueByKey(
-      indexRequests,
-      (request) => `${request.PutRequest.Item.pk}\0${request.PutRequest.Item.sk}`,
-    );
-    stats.indexWritten += await batchWrite({
+    const insertedMessages = await putNewMessages({
       ddb,
-      tableName: indexTable,
-      requests: uniqueIndexRequests,
+      tableName: messagesTable,
+      items: newMessages,
       dryRun,
-      label: 'index',
     });
+    stats.imported += insertedMessages.length;
+    stats.skippedDuplicate += newMessages.length - insertedMessages.length;
+
+    if (dryRun) {
+      const indexRequests = insertedMessages.flatMap(buildIndexWriteRequests);
+      const { unique: uniqueIndexRequests } = uniqueByKey(
+        indexRequests,
+        (request) => `${request.PutRequest.Item.pk}\0${request.PutRequest.Item.sk}`,
+      );
+      stats.indexWritten += uniqueIndexRequests.length;
+      continue;
+    }
+
+    for (const candidate of uniqueCandidates) {
+      stats.indexWritten += await reconcileSearchIndex({
+        message: candidate,
+        ddbSend: (command) => ddb.send(command),
+        messagesTable,
+        indexTable,
+      });
+    }
   }
 
   process.stderr.write(`import: done ${JSON.stringify(stats)}${dryRun ? ' [dry-run]' : ''}\n`);
@@ -366,5 +376,6 @@ module.exports = {
   isIgnoredExportMessage,
   buildMessageItem,
   buildIndexWriteRequests,
+  putNewMessages,
   importSlackExport,
 };

@@ -1,4 +1,4 @@
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { createReadStream, createWriteStream } = require('node:fs');
 const { stat, unlink } = require('node:fs/promises');
 const { once } = require('node:events');
@@ -17,6 +17,7 @@ const {
 } = require('@aws-sdk/lib-dynamodb');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { isArchiverGeneratedMessage } = require('../search/handler');
+const { listSlackChannels, getSlackChannel } = require('../common/slack-channels');
 const { authenticateWebRequest, verifyCognitoJwt } = require('../web/auth');
 
 const EXPORT_TTL_SECONDS = 24 * 60 * 60;
@@ -64,34 +65,6 @@ async function slackApi({ botToken, method, params = {} }) {
     throw new Error(`Slack ${method} failed: ${payload.error || response.status}`);
   }
   return payload;
-}
-
-async function listSlackChannels({ botToken, slackRequest = slackApi }) {
-  const channels = [];
-  let cursor;
-  do {
-    const payload = await slackRequest({
-      botToken,
-      method: 'conversations.list',
-      params: {
-        types: 'public_channel',
-        exclude_archived: 'false',
-        limit: '200',
-        cursor,
-      },
-    });
-    for (const channel of payload.channels || []) {
-      if (channel.id && channel.name) {
-        channels.push({
-          id: channel.id,
-          name: channel.name,
-          is_archived: Boolean(channel.is_archived),
-        });
-      }
-    }
-    cursor = payload.response_metadata?.next_cursor || '';
-  } while (cursor);
-  return channels.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function listSlackUserNames({ botToken, slackRequest = slackApi }) {
@@ -148,6 +121,8 @@ function createExportHandler({
   verifyAuth = verifyCognitoJwt,
   ddbSend,
   invokeWorker,
+  loadBotToken = getBotToken,
+  listChannels = listSlackChannels,
   createJobId = randomUUID,
   now = () => new Date(),
 }) {
@@ -167,12 +142,22 @@ function createExportHandler({
       return json({ error: 'invalid_channel_id' }, 400);
     }
 
+    let publicChannel;
+    try {
+      const botToken = await loadBotToken({ teamId: auth.teamId });
+      publicChannel = (await listChannels({ botToken })).find((channel) => channel.id === channelId);
+    } catch {
+      return json({ error: 'channel_visibility_unavailable' }, 503);
+    }
+    if (!publicChannel) return json({ error: 'channel_not_archived' }, 404);
+
     const messageResult = await ddbSend(new QueryCommand({
       TableName: process.env.MESSAGES_TABLE,
       KeyConditionExpression: 'pk = :pk',
       ExpressionAttributeValues: {
         ':pk': `workspace#${auth.teamId}#channel#${channelId}`,
       },
+      ConsistentRead: true,
       Limit: 1,
     }));
     const firstMessage = messageResult.Items?.[0];
@@ -188,9 +173,9 @@ function createExportHandler({
       user_id: auth.userId,
       channel_id: channelId,
       channel_name: sanitizeLabel(
-        requestedChannelName && requestedChannelName !== channelId
+        publicChannel.name || (requestedChannelName && requestedChannelName !== channelId
           ? requestedChannelName
-          : firstMessage.channel_name || channelId,
+          : firstMessage.channel_name || channelId),
         channelId,
       ),
       status: 'queued',
@@ -224,6 +209,9 @@ function createExportStatusHandler({
   verifyAuth = verifyCognitoJwt,
   ddbSend,
   createDownloadUrl,
+  loadBotToken = getBotToken,
+  getChannel = getSlackChannel,
+  getFingerprint = getChannelExportFingerprint,
 }) {
   return async (event) => {
     const auth = await authenticateWebRequest({
@@ -244,9 +232,29 @@ function createExportStatusHandler({
     if (!job || job.team_id !== auth.teamId || job.user_id !== auth.userId) {
       return json({ error: 'export_not_found' }, 404);
     }
+    let channel;
+    try {
+      const botToken = await loadBotToken({ teamId: auth.teamId });
+      channel = await getChannel({ botToken, channelId: job.channel_id });
+      if (channel?.is_private !== false) return json({ error: 'export_not_found' }, 404);
+    } catch (error) {
+      const headers = Number.isFinite(error.retryAfterSeconds)
+        ? { 'retry-after': String(Math.ceil(error.retryAfterSeconds)) }
+        : {};
+      return json({ error: 'channel_visibility_unavailable' }, 503, headers);
+    }
 
     const response = publicJob(job);
     if (job.status === 'completed' && job.object_key) {
+      const fingerprint = await getFingerprint({
+        ddbSend,
+        teamId: auth.teamId,
+        channelId: job.channel_id,
+        channelName: channel.name || job.channel_name,
+      });
+      if (!job.message_fingerprint || fingerprint !== job.message_fingerprint) {
+        return json({ error: 'export_outdated' }, 409);
+      }
       response.download_url = await createDownloadUrl(job);
       response.download_expires_in = DOWNLOAD_URL_SECONDS;
     }
@@ -273,6 +281,7 @@ function createExportWorker({
   ddbSend,
   s3Send,
   loadBotToken = getBotToken,
+  listChannels = listSlackChannels,
   loadUserNames = listSlackUserNames,
   writeCsv = writeChannelCsv,
   now = () => new Date(),
@@ -293,20 +302,23 @@ function createExportWorker({
         },
       }));
 
+      const botToken = await loadBotToken({ teamId: job.team_id });
+      const publicChannel = (await listChannels({ botToken }))
+        .find((channel) => channel.id === job.channel_id);
+      if (!publicChannel) throw new Error('channel is no longer public or available');
       let userNames = new Map();
       try {
-        const botToken = await loadBotToken({ teamId: job.team_id });
         userNames = await loadUserNames({ botToken });
       } catch {
         userNames = new Map();
       }
 
-      const messageCount = await writeCsv({
+      const { messageCount, fingerprint } = await writeCsv({
         filePath,
         ddbSend,
         teamId: job.team_id,
         channelId: job.channel_id,
-        channelName: job.channel_name,
+        channelName: publicChannel.name,
         userNames,
       });
       const file = await stat(filePath);
@@ -317,18 +329,19 @@ function createExportWorker({
         Body: createReadStream(filePath),
         ContentLength: file.size,
         ContentType: 'text/csv; charset=utf-8',
-        ContentDisposition: `attachment; filename="${safeFilename(job.channel_name)}-messages.csv"`,
+        ContentDisposition: `attachment; filename="${safeFilename(publicChannel.name)}-messages.csv"`,
         ServerSideEncryption: 'AES256',
       }));
       await ddbSend(new UpdateCommand({
         TableName: process.env.EXPORT_JOBS_TABLE,
         Key: { job_id: job.job_id },
-        UpdateExpression: 'SET #status = :status, object_key = :objectKey, message_count = :messageCount, file_size = :fileSize, updated_at = :updated REMOVE error_message',
+        UpdateExpression: 'SET #status = :status, object_key = :objectKey, message_count = :messageCount, message_fingerprint = :fingerprint, file_size = :fileSize, updated_at = :updated REMOVE error_message',
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
           ':status': 'completed',
           ':objectKey': objectKey,
           ':messageCount': messageCount,
+          ':fingerprint': fingerprint,
           ':fileSize': file.size,
           ':updated': now().toISOString(),
         },
@@ -357,23 +370,16 @@ async function writeChannelCsv({
   userNames = new Map(),
 }) {
   const output = createWriteStream(filePath, { encoding: 'utf8' });
+  const fingerprint = createHash('sha256');
+  updateFingerprintHeader(fingerprint, { teamId, channelId, channelName });
   output.write(`\uFEFF${CSV_COLUMNS.join(',')}\n`);
-  let messageCount = 0;
-  let exclusiveStartKey;
   try {
-    do {
-      const input = {
-        TableName: process.env.MESSAGES_TABLE,
-        KeyConditionExpression: 'pk = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `workspace#${teamId}#channel#${channelId}`,
-        },
-        ScanIndexForward: true,
-      };
-      if (exclusiveStartKey) input.ExclusiveStartKey = exclusiveStartKey;
-      const result = await ddbSend(new QueryCommand(input));
-      for (const message of result.Items || []) {
-        if (!isExportableMessage({ message, teamId, channelId })) continue;
+    const messageCount = await forEachExportableMessage({
+      ddbSend,
+      teamId,
+      channelId,
+      onMessage: async (message) => {
+        updateMessageFingerprint(fingerprint, message);
         const row = {
           workspace_id: teamId,
           channel_id: channelId,
@@ -390,18 +396,72 @@ async function writeChannelCsv({
         };
         const line = `${CSV_COLUMNS.map((column) => csvCell(row[column])).join(',')}\n`;
         if (!output.write(line)) await once(output, 'drain');
-        messageCount += 1;
-      }
-      exclusiveStartKey = result.LastEvaluatedKey;
-    } while (exclusiveStartKey);
+      },
+    });
     output.end();
     await finished(output);
-    return messageCount;
+    return { messageCount, fingerprint: fingerprint.digest('hex') };
   } catch (error) {
     output.destroy();
     await finished(output).catch(() => {});
     throw error;
   }
+}
+
+async function getChannelExportFingerprint({ ddbSend, teamId, channelId, channelName }) {
+  const fingerprint = createHash('sha256');
+  updateFingerprintHeader(fingerprint, { teamId, channelId, channelName });
+  await forEachExportableMessage({
+    ddbSend,
+    teamId,
+    channelId,
+    onMessage: (message) => updateMessageFingerprint(fingerprint, message),
+  });
+  return fingerprint.digest('hex');
+}
+
+async function forEachExportableMessage({ ddbSend, teamId, channelId, onMessage }) {
+  let count = 0;
+  let exclusiveStartKey;
+  do {
+    const input = {
+      TableName: process.env.MESSAGES_TABLE,
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: {
+        ':pk': `workspace#${teamId}#channel#${channelId}`,
+      },
+      ScanIndexForward: true,
+      ConsistentRead: true,
+    };
+    if (exclusiveStartKey) input.ExclusiveStartKey = exclusiveStartKey;
+    const result = await ddbSend(new QueryCommand(input));
+    for (const message of result.Items || []) {
+      if (!isExportableMessage({ message, teamId, channelId })) continue;
+      await onMessage(message);
+      count += 1;
+    }
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return count;
+}
+
+function updateFingerprintHeader(fingerprint, { teamId, channelId, channelName }) {
+  fingerprint.update(`${JSON.stringify([teamId, channelId, channelName])}\n`);
+}
+
+function updateMessageFingerprint(fingerprint, message) {
+  fingerprint.update(`${JSON.stringify([
+    message.pk,
+    message.sk,
+    message.revision_ts ?? null,
+    message.ts,
+    message.user_id,
+    message.thread_ts,
+    message.text,
+    message.created_at,
+    message.updated_at,
+    message.import_source || 'slack_events',
+  ])}\n`);
 }
 
 function isExportableMessage({ message, teamId, channelId }) {
@@ -481,10 +541,10 @@ function safeFilename(value) {
     .slice(0, 80) || 'channel';
 }
 
-function json(body, statusCode = 200) {
+function json(body, statusCode = 200, headers = {}) {
   return {
     statusCode,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
+    headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
     body: JSON.stringify(body),
   };
 }
@@ -498,6 +558,8 @@ exports.csvCell = csvCell;
 exports.isExportableMessage = isExportableMessage;
 exports.listSlackChannels = listSlackChannels;
 exports.listSlackUserNames = listSlackUserNames;
+exports.getBotToken = getBotToken;
+exports.getChannelExportFingerprint = getChannelExportFingerprint;
 exports.parseJsonBody = parseJsonBody;
 exports.safeFilename = safeFilename;
 exports.writeChannelCsv = writeChannelCsv;

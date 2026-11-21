@@ -10,12 +10,67 @@ const {
   isIgnoredExportMessage,
   buildMessageItem,
   buildIndexWriteRequests,
+  putNewMessages,
   importSlackExport,
 } = require('../scripts/import-slack-export');
 
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value), 'utf8');
+}
+
+function memoryDdb({ items = [], failTransactions = 0 } = {}) {
+  const keyOf = ({ pk, sk }) => JSON.stringify([pk, sk]);
+  const messages = new Map(items.map((item) => [keyOf(item), structuredClone(item)]));
+  const indexes = new Map();
+  let failures = failTransactions;
+  return {
+    messages,
+    indexes,
+    async send(command) {
+      const name = command.constructor.name;
+      if (name === 'BatchGetCommand') {
+        const keys = command.input.RequestItems.messages.Keys;
+        return { Responses: { messages: keys.flatMap((key) => {
+          const item = messages.get(keyOf(key));
+          return item ? [structuredClone(item)] : [];
+        }) } };
+      }
+      if (name === 'PutCommand') {
+        const item = command.input.Item;
+        const key = keyOf(item);
+        if (messages.has(key)) throw Object.assign(new Error('already exists'), { name: 'ConditionalCheckFailedException' });
+        messages.set(key, structuredClone(item));
+        return {};
+      }
+      if (name === 'GetCommand') return { Item: structuredClone(messages.get(keyOf(command.input.Key))) };
+      if (name === 'TransactWriteCommand') {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('temporary index failure');
+        }
+        for (const action of command.input.TransactItems) {
+          if (action.ConditionCheck) {
+            const current = messages.get(keyOf(action.ConditionCheck.Key));
+            if (current?.revision_ts !== action.ConditionCheck.ExpressionAttributeValues[':revision']) {
+              throw Object.assign(new Error('transaction canceled'), { name: 'TransactionCanceledException' });
+            }
+          }
+        }
+        for (const action of command.input.TransactItems) {
+          if (action.Put) indexes.set(keyOf(action.Put.Item), structuredClone(action.Put.Item));
+          if (action.Delete) indexes.delete(keyOf(action.Delete.Key));
+        }
+        return {};
+      }
+      if (name === 'UpdateCommand') {
+        const current = messages.get(keyOf(command.input.Key));
+        current.index_tokens = structuredClone(command.input.ExpressionAttributeValues[':tokens']);
+        return {};
+      }
+      throw new Error(`unexpected command: ${name}`);
+    },
+  };
 }
 
 function makeExportDir() {
@@ -102,6 +157,24 @@ test('isIgnoredExportMessage matches current live ingest filtering', () => {
   assert.equal(isIgnoredExportMessage({ type: 'file' }), true);
 });
 
+test('importSlackExport skips channels marked private in Slack export metadata', async () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-private-export-'));
+  writeJson(path.join(source, 'channels.json'), [{ id: 'C_PRIVATE', name: 'private', is_private: true }]);
+  writeJson(path.join(source, 'users.json'), [{ id: 'U1', team_id: 'T123' }]);
+  writeJson(path.join(source, 'private', '2026-06-30.json'), [
+    { type: 'message', user: 'U1', team: 'T123', ts: '1782803731.223699', text: 'secret' },
+  ]);
+  const result = await importSlackExport({
+    ddb: { send: async () => { throw new Error('private channel must not be written'); } },
+    source,
+    messagesTable: 'messages',
+    indexTable: 'index',
+  });
+
+  assert.equal(result.imported, 0);
+  assert.equal(result.skippedMissingChannel, 1);
+});
+
 test('buildMessageItem and buildIndexWriteRequests use existing table keys', () => {
   const item = buildMessageItem({
     teamId: 'T123',
@@ -118,6 +191,14 @@ test('buildMessageItem and buildIndexWriteRequests use existing table keys', () 
   assert.equal(item.sk, 'ts#1782803731.223699');
   assert.equal(item.channel_name, 'general');
   assert.equal(item.import_source, 'slack_export');
+  assert.equal(item.revision_ts, Number.parseFloat(item.ts));
+  const edited = buildMessageItem({
+    teamId: 'T123',
+    channel: { id: 'C1', name: 'general' },
+    message: { ts: item.ts, edited: { ts: '1782803732.000000' }, text: 'edited' },
+  });
+  assert.equal(edited.revision_ts, 1782803732);
+  assert.deepEqual(item.search_tokens, item.index_tokens);
 
   const indexItems = buildIndexWriteRequests(item).map((request) => request.PutRequest.Item);
   assert.ok(indexItems.some((entry) => entry.pk === 'workspace#T123#token#needle'));
@@ -126,23 +207,21 @@ test('buildMessageItem and buildIndexWriteRequests use existing table keys', () 
 
 test('importSlackExport imports only new human messages and skips duplicates', async () => {
   const source = makeExportDir();
+  const existing = buildMessageItem({
+    teamId: 'T123',
+    channel: { id: 'C2', name: 'random' },
+    message: { type: 'message', user: 'U2', ts: '1782803733.000000', text: 'already archived' },
+  });
+  const ddb = memoryDdb({ items: [existing] });
   const sent = [];
-  const existingKey = 'workspace#T123#channel#C2\0ts#1782803733.000000';
+  const send = ddb.send.bind(ddb);
+  ddb.send = async (command) => {
+    sent.push(command);
+    return send(command);
+  };
 
   const result = await importSlackExport({
-    ddb: {
-      send: async (command) => {
-        sent.push(command);
-        if (command.constructor.name === 'BatchGetCommand') {
-          const responses = [];
-          for (const key of command.input.RequestItems.messages.Keys) {
-            if (`${key.pk}\0${key.sk}` === existingKey) responses.push(key);
-          }
-          return { Responses: { messages: responses } };
-        }
-        return {};
-      },
-    },
+    ddb,
     source,
     messagesTable: 'messages',
     indexTable: 'index',
@@ -154,13 +233,43 @@ test('importSlackExport imports only new human messages and skips duplicates', a
   assert.equal(result.skippedIgnored, 1);
   assert.equal(result.skippedDuplicate, 2);
   assert.ok(result.indexWritten > 0);
+  assert.ok(ddb.indexes.size > 0);
 
-  const messageWrites = sent
-    .filter((command) => command.constructor.name === 'BatchWriteCommand')
-    .filter((command) => command.input.RequestItems.messages)
-    .flatMap((command) => command.input.RequestItems.messages);
+  const messageWrites = sent.filter((command) => command.constructor.name === 'PutCommand');
   assert.equal(messageWrites.length, 1);
-  assert.equal(messageWrites[0].PutRequest.Item.text, 'hello import needle');
+  assert.equal(messageWrites[0].input.Item.text, 'hello import needle');
+  assert.equal(messageWrites[0].input.ConditionExpression, 'attribute_not_exists(pk)');
+});
+
+test('conditional import skips a tombstone created after the duplicate check', async () => {
+  const inserted = await putNewMessages({
+    ddb: {
+      send: async () => {
+        throw Object.assign(new Error('already exists'), { name: 'ConditionalCheckFailedException' });
+      },
+    },
+    tableName: 'messages',
+    items: [buildMessageItem({
+      teamId: 'T123',
+      channel: { id: 'C1', name: 'general' },
+      message: { ts: '1782803731.223699', user: 'U1', text: 'old content' },
+    })],
+  });
+
+  assert.deepEqual(inserted, []);
+});
+
+test('rerunning import repairs index entries after a partial failure', async () => {
+  const source = makeExportDir();
+  const ddb = memoryDdb({ failTransactions: 1 });
+  const options = { ddb, source, messagesTable: 'messages', indexTable: 'index' };
+
+  await assert.rejects(importSlackExport(options), /temporary index failure/);
+  assert.equal(ddb.indexes.size, 0);
+  assert.ok([...ddb.messages.values()].some((item) => item.text === 'hello import needle'));
+
+  await importSlackExport(options);
+  assert.ok([...ddb.indexes.values()].some((item) => item.token === 'needle'));
 });
 
 test('importSlackExport dry-run dedupes but does not write', async () => {
