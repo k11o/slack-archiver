@@ -82,11 +82,28 @@ The stack creates a separate Cognito public app client and a `read` scope on the
 
 Cognito resource binding requires Managed Login v2 and the Essentials or Plus feature plan. The stack pins the User Pool to Essentials, enables Managed Login v2, and applies Cognito-provided branding to both app clients. Upgrading an existing Lite pool may increase Cognito charges; confirm pricing before deployment. Switching the domain version invalidates existing Hosted UI sessions, so users may need to sign in again.
 
-1. Add each MCP client's exact OAuth callback URL to `McpOAuthCallbackUrls`. The default is Claude's `https://claude.ai/api/mcp/auth_callback`; for ChatGPT, use the exact callback URL shown for the connection. This callback belongs in Cognito's app-client callback list, **not** in Slack's redirect URL list. The Slack redirect URL remains Cognito's `/oauth2/idpresponse`.
+1. Add each MCP client's exact OAuth callback URL to `McpOAuthCallbackUrls`. The defaults include Claude's `https://claude.ai/api/mcp/auth_callback` and Hermes CLI's `http://localhost:27890/callback`; for ChatGPT, use the exact callback URL shown for the connection. These callbacks belong in Cognito's app-client callback list, **not** in Slack's redirect URL list. The Slack redirect URL remains Cognito's `/oauth2/idpresponse`.
 2. If a client sends an `Origin` header, it must match the MCP endpoint origin or an entry in `McpAllowedOrigins`. Set that parameter to the browser origins used by the client.
 3. Deploy and read `McpOAuthClientId`, `McpResourceUrl`, and `McpOAuthDiscoveryUrl` from stack outputs. Configure the client with the public client ID and no client secret.
 4. The client must use authorization-code flow with PKCE S256, request `openid email profile <McpResourceUrl>/read`, select Slack as the identity provider, and send the exact `McpResourceUrl` as the OAuth resource indicator.
 5. The client discovers Cognito's authorization and token endpoints from the User Pool OIDC document. The MCP protected-resource metadata advertises the User Pool issuer, not the Hosted UI hostname.
+
+### Hermes Agent CLI v0.23.1
+
+Hermes supports remote Streamable HTTP MCP servers with OAuth 2.1 PKCE. Configure the CLI with the public client ID from `McpOAuthClientId` and the pre-registered callback:
+
+```yaml
+mcp_servers:
+  slack_archiver:
+    url: "<McpResourceUrl>"
+    auth: oauth
+    oauth:
+      client_id: "<McpOAuthClientId>"
+      redirect_host: localhost
+      redirect_port: 27890
+```
+
+Do not set a client secret. On a remote TrueNAS host, run `hermes mcp login slack_archiver` in the same profile used by the web app or gateway. Open the authorization URL in a browser. If the loopback callback cannot reach the container, copy the full redirect URL from the browser and paste it into the Hermes CLI prompt; do not send it through chat. Verify the connection with `hermes mcp test slack_archiver`. Persist the active Hermes home so its OAuth tokens survive container restarts. Hermes CLI calls do not need an additional `McpAllowedOrigins` entry because they do not send a browser `Origin` header.
 
 The MCP Lambda accepts only access tokens with `token_use=access`, the dedicated MCP `client_id`, a matching `aud` resource, an unexpired `exp`, and the resource-specific `<McpResourceUrl>/read` scope. It then calls Cognito's `/oauth2/userInfo`, requires the returned `sub` to match the token, validates the Slack workspace claim, and applies the optional allowlist. An ID token, Web UI client token, wrong audience, missing Slack claim, or disallowed workspace is rejected. No caller-supplied workspace value is used.
 

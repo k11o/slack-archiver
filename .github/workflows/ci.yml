@@ -96,6 +96,8 @@ jobs:
         run: uv run sam build
 
       - name: Deploy SAM application
+        env:
+          MCP_OAUTH_CALLBACK_URLS: ${{ vars.MCP_OAUTH_CALLBACK_URLS || 'https://claude.ai/api/mcp/auth_callback,http://localhost:27890/callback' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -143,4 +145,5 @@ jobs:
               SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
               AllowedSlackTeamIds="$ALLOWED_SLACK_TEAM_IDS" \
               CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
-              WebBaseUrl="$WEB_BASE_URL"
+              WebBaseUrl="$WEB_BASE_URL" \
+              McpOAuthCallbackUrls="$MCP_OAUTH_CALLBACK_URLS"
