@@ -54,7 +54,7 @@ async function slackApi({ botToken, method, params = {}, fetchImpl = fetch, slee
     const retryAfterSeconds = retryAfterHeader === null ? NaN : Number(retryAfterHeader);
     const rateLimited = response.status === 429 || payload.error === 'ratelimited';
     const error = Object.assign(new Error(`Slack ${method} failed: ${payload.error || response.status}`), {
-      statusCode: response.status,
+      statusCode: response.ok ? 502 : response.status,
       slackError: payload.error,
     });
     if (rateLimited && Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {

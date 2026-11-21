@@ -107,13 +107,21 @@ aws ssm put-parameter \
   --value '<SLACK_SIGNING_SECRET>' \
   --overwrite
 
-aws ssm put-parameter \
+if aws ssm get-parameter \
   --profile <AWS_PROFILE> \
   --region ap-northeast-1 \
   --name /slack-archiver/ai-cursor-encryption-key \
-  --type SecureString \
-  --value "$(openssl rand -base64 32)" \
-  --overwrite
+  --query Parameter.Name \
+  --output text >/dev/null 2>&1; then
+  echo "Cursor encryption key already exists; leaving it unchanged."
+else
+  aws ssm put-parameter \
+    --profile <AWS_PROFILE> \
+    --region ap-northeast-1 \
+    --name /slack-archiver/ai-cursor-encryption-key \
+    --type SecureString \
+    --value "$(openssl rand -base64 32)"
+fi
 
 aws ssm put-parameter \
   --profile <AWS_PROFILE> \

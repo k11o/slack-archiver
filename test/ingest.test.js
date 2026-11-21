@@ -378,6 +378,29 @@ test('message_changed tombstones are handled as deletions', async () => {
   assert.equal(ddb.indexes.has(indexKey('T123', 'secret')), false);
 });
 
+test('tombstone revision prefers Slack event timestamp over event_time', async () => {
+  const ddb = memoryDdb();
+  const handler = makeHandler(ddb);
+  const original = { type: 'message', channel: 'C123', user: 'U123', ts: '1710000001.000000', text: 'before deletion' };
+  await handler(event({ event: original }));
+  await handler(event({
+    event_time: 1710000009,
+    event: {
+      type: 'message',
+      subtype: 'message_changed',
+      channel: 'C123',
+      ts: '1710000005.000000',
+      previous_message: original,
+      message: { subtype: 'tombstone', ts: original.ts },
+    },
+  }));
+
+  assert.equal(ddb.records.get(keyOf({
+    pk: 'workspace#T123#channel#C123',
+    sk: `ts#${original.ts}`,
+  })).revision_ts, 1710000005);
+});
+
 test('a deletion arriving before the original post leaves a tombstone', async () => {
   const ddb = memoryDdb();
   const handler = makeHandler(ddb);

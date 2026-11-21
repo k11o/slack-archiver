@@ -86,8 +86,8 @@ function toMessageChange({ body, slackEvent, teamId, channelId }) {
     if (!message) return null;
     if (message.subtype === 'tombstone') {
       const revisionTs = parseSlackTimestamp(message.edited?.ts)
-        || Number(body.event_time)
         || parseSlackTimestamp(slackEvent.ts)
+        || Number(body.event_time)
         || 0;
       if (!message.ts || !revisionTs) return null;
       return {

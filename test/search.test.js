@@ -257,6 +257,39 @@ test('search pages beyond private index rows before limiting public candidates',
   assert.equal(result.hasMore, false);
 });
 
+test('search marks results incomplete when candidate ranking truncates complete token scans', async () => {
+  process.env.SEARCH_INDEX_TABLE = 'index-table';
+  process.env.MESSAGES_TABLE = 'messages-table';
+  let nextMessageId = 0;
+  const result = await searchMessages({
+    query: 'needle phrase',
+    teamId: 'T123',
+    ddbSend: async (command) => {
+      if (command.constructor.name === 'QueryCommand') {
+        const entries = Array.from({ length: 15 }, () => {
+          nextMessageId += 1;
+          return {
+            message_pk: `workspace#T123#channel#C123-${nextMessageId}`,
+            message_sk: `ts#171000000${nextMessageId}.000000`,
+          };
+        });
+        return { Items: entries };
+      }
+      if (command.constructor.name === 'GetCommand') {
+        return { Item: {
+          team_id: 'T123',
+          text: 'needle phrase',
+          normalized_text: 'needle phrase',
+        } };
+      }
+      throw new Error(`unexpected command: ${command.constructor.name}`);
+    },
+  });
+
+  assert.equal(result.messages.length, 25);
+  assert.equal(result.hasMore, true);
+});
+
 test('search reports when private index rows exhaust the bounded scan budget', async () => {
   process.env.SEARCH_INDEX_TABLE = 'index-table';
   let queryCalls = 0;

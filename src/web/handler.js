@@ -587,6 +587,7 @@ function renderPage(config) {
 
     function exportErrorMessage(error) {
       if (error === "channel_not_archived") return "No archived messages were found for that channel.";
+      if (error === "export_outdated") return "Messages changed since this CSV was created. Create a new export.";
       if (error === "invalid_channel_id") return "Enter a valid Slack channel ID.";
       if (error === "unauthorized" || error === "forbidden_workspace" || error === "forbidden_user") {
         return "Authentication failed. Please sign in again.";

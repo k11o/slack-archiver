@@ -247,6 +247,7 @@ async function searchMessages({ query, teamId, ddbSend, publicChannelIds }) {
     if (lastKey) hasMore = true;
   }
 
+  if (candidates.size > MAX_CANDIDATES) hasMore = true;
   const rankedCandidates = [...candidates.values()]
     .sort((a, b) => b.score - a.score || b.sk.localeCompare(a.sk))
     .slice(0, MAX_CANDIDATES);

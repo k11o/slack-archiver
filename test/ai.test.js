@@ -208,6 +208,45 @@ test('getArchivedThread returns replies when its root was deleted', async () => 
   assert.deepEqual(result.replies, [reply]);
 });
 
+test('getArchivedThread allows an empty terminal page only with a valid continuation cursor', async () => {
+  process.env.MESSAGES_TABLE = 'messages-table';
+  let queryCount = 0;
+  const ddbSend = async (command) => {
+    if (command.constructor.name === 'GetCommand') return {};
+    queryCount += 1;
+    const reply = message({ ts: '1710000002.000000', thread_ts: TS });
+    return queryCount === 1
+      ? { Items: [reply], LastEvaluatedKey: { pk: reply.pk, sk: reply.sk } }
+      : { Items: [] };
+  };
+  const firstPage = await getArchivedThread({
+    teamId: TEAM_ID,
+    channelId: CHANNEL_ID,
+    rootTs: TS,
+    cursorSecret: 'test-cursor-secret',
+    ddbSend,
+  });
+  const finalPage = await getArchivedThread({
+    teamId: TEAM_ID,
+    channelId: CHANNEL_ID,
+    rootTs: TS,
+    cursor: firstPage.next_cursor,
+    cursorSecret: 'test-cursor-secret',
+    ddbSend,
+  });
+  const missingThread = await getArchivedThread({
+    teamId: TEAM_ID,
+    channelId: CHANNEL_ID,
+    rootTs: TS,
+    cursorSecret: 'test-cursor-secret',
+    ddbSend: async (command) => command.constructor.name === 'GetCommand' ? {} : { Items: [] },
+  });
+
+  assert.ok(firstPage.next_cursor);
+  assert.deepEqual(finalPage, { root: null, replies: [], next_cursor: null });
+  assert.equal(missingThread, null);
+});
+
 test('AI thread API returns replies when the archived root is deleted', async () => {
   const reply = message({ ts: '1710000002.000000', thread_ts: TS, text: 'reply remains' });
   const handler = createAiApiHandler({
@@ -227,6 +266,25 @@ test('AI thread API returns replies when the archived root is deleted', async ()
   assert.equal(response.statusCode, 200);
   assert.equal(JSON.parse(response.body).root, null);
   assert.equal(JSON.parse(response.body).replies[0].text, 'reply remains');
+});
+
+test('AI thread API returns an empty terminal page when a deleted root has no more replies', async () => {
+  const handler = createAiApiHandler({
+    verifyAuth: async () => ({ 'https://slack.com/team_id': TEAM_ID }),
+    getThread: async ({ cursor }) => {
+      assert.equal(cursor, 'opaque-cursor');
+      return { root: null, replies: [], next_cursor: null };
+    },
+  });
+  const response = await handler(apiEvent({
+    method: 'GET',
+    path: `/api/ai/threads/${CHANNEL_ID}/${TS}`,
+    pathParameters: { channelId: CHANNEL_ID, rootTs: TS },
+    queryStringParameters: { cursor: 'opaque-cursor' },
+  }));
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { root: null, replies: [], next_cursor: null });
 });
 
 test('AI search API uses the verified workspace and returns authenticated archive links', async () => {
@@ -259,6 +317,20 @@ test('AI search API uses the verified workspace and returns authenticated archiv
   assert.equal(body.results[0].user_name, 'alice');
   assert.equal(body.results[0].archive_url, `https://archive.example/web?channel_id=${CHANNEL_ID}&ts=${TS}`);
   assert.equal(body.next_cursor, 'next');
+});
+
+test('AI channel API reports Slack error payloads as failures', async () => {
+  const handler = createAiApiHandler({
+    verifyAuth: async () => ({ 'https://slack.com/team_id': TEAM_ID }),
+    loadBotToken: async () => 'bot-token',
+    listChannels: async () => {
+      throw Object.assign(new Error('Slack internal_error'), { statusCode: 502, code: 'channel_list_failed' });
+    },
+  });
+  const response = await handler(apiEvent({ method: 'GET', path: '/api/ai/channels' }));
+
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(JSON.parse(response.body), { error: 'channel_list_failed' });
 });
 
 test('AI API bounds the serialized Lambda response envelope', async () => {

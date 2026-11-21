@@ -99,13 +99,16 @@ test('MCP Streamable HTTP endpoint works with the official SDK client', async ()
       };
     },
     getMessage: async ({ teamId, channelId, ts }) => ({ team_id: teamId, channel_id: channelId, ts, text: 'one message' }),
-    getThread: async ({ teamId, channelId, rootTs }) => ({
-      root: rootTs === '1710000003.000000'
-        ? null
-        : { team_id: teamId, channel_id: channelId, ts: rootTs, text: 'thread root' },
-      replies: [{ team_id: teamId, channel_id: channelId, ts: '1710000002.000000', thread_ts: rootTs, text: 'reply' }],
-      next_cursor: null,
-    }),
+    getThread: async ({ teamId, channelId, rootTs, cursor }) => {
+      if (cursor) return { root: null, replies: [], next_cursor: null };
+      return {
+        root: rootTs === '1710000003.000000'
+          ? null
+          : { team_id: teamId, channel_id: channelId, ts: rootTs, text: 'thread root' },
+        replies: [{ team_id: teamId, channel_id: channelId, ts: '1710000002.000000', thread_ts: rootTs, text: 'reply' }],
+        next_cursor: null,
+      };
+    },
   });
 
   const transport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
@@ -164,6 +167,11 @@ test('MCP Streamable HTTP endpoint works with the official SDK client', async ()
     });
     assert.equal(deletedRoot.structuredContent.root, null);
     assert.equal(deletedRoot.structuredContent.replies.length, 1);
+    const emptyFinalPage = await client.callTool({
+      name: 'get_thread',
+      arguments: { channel_id: 'C123', root_ts: '1710000003.000000', cursor: 'opaque-cursor' },
+    });
+    assert.deepEqual(emptyFinalPage.structuredContent, { root: null, replies: [], next_cursor: null });
     const channels = await client.callTool({ name: 'list_channels', arguments: {} });
     assert.equal(channels.structuredContent.channels[0].channel_name, 'general');
   } finally {

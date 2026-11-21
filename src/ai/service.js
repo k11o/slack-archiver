@@ -146,7 +146,7 @@ async function getArchivedThread({
     .filter((message) => isPublicHumanMessage(message, teamId)
       && message.channel_id === channelId
       && message.thread_ts === rootTs);
-  if (!root && !replies.length && !page.LastEvaluatedKey) return null;
+  if (!root && !replies.length && !page.LastEvaluatedKey && !cursor) return null;
   return {
     root,
     replies,

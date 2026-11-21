@@ -114,7 +114,8 @@ function createAiApiHandler({
           loadNames,
           webBaseUrl,
         });
-        if ((hasRoot && !serialized[0]) || (!serialized.length && !result.next_cursor)) {
+        if ((hasRoot && !serialized[0])
+          || (!serialized.length && !result.next_cursor && !event.queryStringParameters?.cursor)) {
           return json({ error: 'thread_not_found' }, 404);
         }
         return json({

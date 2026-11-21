@@ -67,6 +67,7 @@ Primary access pattern: load one asynchronous export by its opaque job ID.
 | status | `queued`, `running`, `completed`, or `failed`. |
 | object_key | Private S3 object key after completion. |
 | message_count | Number of CSV message rows. |
+| message_fingerprint | SHA-256 snapshot of the exported channel content, checked before issuing a download URL. |
 | file_size | Generated CSV size in bytes. |
 | error_message | Bounded diagnostic text for failed jobs. |
 | expires_at | DynamoDB TTL value, 24 hours after creation. |

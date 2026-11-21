@@ -193,7 +193,7 @@ function createServer({ ddbSend, loadBotToken, listChannels, serialize, search, 
       listChannels,
       webBaseUrl: process.env.WEB_BASE_URL,
     });
-    if ((hasRoot && !messages[0]) || (!messages.length && !result.next_cursor)) {
+    if ((hasRoot && !messages[0]) || (!messages.length && !result.next_cursor && !args.cursor)) {
       throw apiError(404, 'thread_not_found');
     }
     return {

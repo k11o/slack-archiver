@@ -8,6 +8,7 @@ const {
   createExportHandler,
   createExportStatusHandler,
   createExportWorker,
+  getChannelExportFingerprint,
   csvCell,
   isExportableMessage,
   listSlackChannels,
@@ -77,6 +78,11 @@ test('Slack API honors a short Retry-After and exposes longer retry delays', asy
     }),
     sleep: async () => { throw new Error('long delays must be propagated'); },
   }), { retryAfterSeconds: 30 });
+  await assert.rejects(slackApi({
+    botToken: 'xoxb-token',
+    method: 'conversations.list',
+    fetchImpl: async () => new Response(JSON.stringify({ ok: false, error: 'internal_error' }), { status: 200 }),
+  }), { statusCode: 502 });
 });
 
 test('listSlackChannels follows Slack pagination and returns a sorted public-channel list', async () => {
@@ -235,13 +241,18 @@ test('completed export status returns a short-lived download URL to its owner', 
         status: 'completed',
         object_key: 'exports/T123/U_REQUESTER/job-1.csv',
         message_count: 2,
+        message_fingerprint: 'current-fingerprint',
       },
     }),
     loadBotToken: async () => 'bot-token',
     getChannel: async ({ botToken, channelId }) => {
       assert.equal(botToken, 'bot-token');
       assert.equal(channelId, 'C1');
-      return { id: 'C1', is_private: false };
+      return { id: 'C1', name: 'general', is_private: false };
+    },
+    getFingerprint: async ({ teamId, channelId, channelName }) => {
+      assert.deepEqual({ teamId, channelId, channelName }, { teamId: 'T123', channelId: 'C1', channelName: 'general' });
+      return 'current-fingerprint';
     },
     createDownloadUrl: async (job) => {
       assert.equal(job.object_key, 'exports/T123/U_REQUESTER/job-1.csv');
@@ -255,6 +266,24 @@ test('completed export status returns a short-lived download URL to its owner', 
   assert.equal(response.statusCode, 200);
   assert.equal(job.download_url, 'https://download.example/signed');
   assert.equal(job.download_expires_in, 900);
+});
+
+test('export status withholds old CSV files after archived messages change', async () => {
+  const handler = createExportStatusHandler({
+    verifyAuth: async () => authenticatedClaims,
+    ddbSend: async () => ({ Item: {
+      job_id: 'job-1', team_id: 'T123', user_id: 'U_REQUESTER', channel_id: 'C1', status: 'completed',
+      object_key: 'old.csv', message_fingerprint: 'before-edit',
+    } }),
+    loadBotToken: async () => 'bot-token',
+    getChannel: async () => ({ id: 'C1', name: 'general', is_private: false }),
+    getFingerprint: async () => 'after-edit',
+    createDownloadUrl: async () => { throw new Error('outdated exports must not be signed'); },
+  });
+
+  const response = await handler({ headers: {}, pathParameters: { jobId: 'job-1' } });
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), { error: 'export_outdated' });
 });
 
 test('export status rechecks one channel and does not issue a URL after it becomes private', async () => {
@@ -298,7 +327,7 @@ test('writeChannelCsv paginates in timestamp order and preserves multiline Japan
   const filePath = path.join(directory, 'messages.csv');
   let page = 0;
   try {
-    const count = await writeChannelCsv({
+    const result = await writeChannelCsv({
       filePath,
       teamId: 'T123',
       channelId: 'C1',
@@ -326,7 +355,8 @@ test('writeChannelCsv paginates in timestamp order and preserves multiline Japan
     });
     const csv = await readFile(filePath, 'utf8');
 
-    assert.equal(count, 2);
+    assert.equal(result.messageCount, 2);
+    assert.match(result.fingerprint, /^[a-f0-9]{64}$/);
     assert.equal(page, 2);
     assert.ok(csv.startsWith('\uFEFFworkspace_id,channel_id'));
     assert.match(csv, /"Alice"/);
@@ -337,6 +367,30 @@ test('writeChannelCsv paginates in timestamp order and preserves multiline Japan
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('export fingerprint changes with edits and deletions', async () => {
+  let current = message({
+    pk: 'workspace#T123#channel#C1',
+    sk: 'ts#1710000001.000000',
+    revision_ts: 1710000001,
+    text: 'before edit',
+  });
+  const getFingerprint = () => getChannelExportFingerprint({
+    teamId: 'T123',
+    channelId: 'C1',
+    channelName: 'general',
+    ddbSend: async () => ({ Items: [current] }),
+  });
+
+  const originalFingerprint = await getFingerprint();
+  current = { ...current, revision_ts: 1710000002, text: 'after edit' };
+  const editedFingerprint = await getFingerprint();
+  current = { ...current, revision_ts: 1710000003, text: '', deleted: true };
+  const deletedFingerprint = await getFingerprint();
+
+  assert.notEqual(editedFingerprint, originalFingerprint);
+  assert.notEqual(deletedFingerprint, editedFingerprint);
 });
 
 test('isExportableMessage excludes bot, app, generated, deleted, and cross-workspace rows', () => {
@@ -367,7 +421,7 @@ test('export worker uploads the generated CSV and records completion metadata', 
       writeCsv: async ({ filePath, userNames }) => {
         assert.equal(userNames.get('U1'), 'Alice');
         await writeFile(filePath, '\uFEFFheader\nrow\n');
-        return 1;
+        return { messageCount: 1, fingerprint: 'snapshot-fingerprint' };
       },
       ddbSend: async (command) => {
         commands.push(command);
@@ -393,6 +447,7 @@ test('export worker uploads the generated CSV and records completion metadata', 
     assert.equal(updates.length, 2);
     assert.equal(updates[0].input.ExpressionAttributeValues[':status'], 'running');
     assert.equal(updates[1].input.ExpressionAttributeValues[':status'], 'completed');
+    assert.equal(updates[1].input.ExpressionAttributeValues[':fingerprint'], 'snapshot-fingerprint');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
