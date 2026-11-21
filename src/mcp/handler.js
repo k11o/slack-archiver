@@ -239,7 +239,7 @@ async function safeTool(operation) {
   } catch (error) {
     const code = error.statusCode && error.statusCode < 500
       ? error.code
-      : (error.code || 'request_failed');
+      : safeErrorCode(error);
     const data = { error: code || 'request_failed' };
     return {
       isError: true,
@@ -247,6 +247,13 @@ async function safeTool(operation) {
       structuredContent: data,
     };
   }
+}
+
+function safeErrorCode(error) {
+  const candidate = error?.code || error?.Code || (error?.name !== 'Error' ? error?.name : undefined);
+  return typeof candidate === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(candidate)
+    ? candidate
+    : 'request_failed';
 }
 
 function isAllowedOrigin(event, allowedOrigins, expectedHost) {
