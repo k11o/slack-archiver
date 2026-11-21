@@ -237,10 +237,7 @@ async function safeTool(operation) {
       structuredContent: data,
     };
   } catch (error) {
-    const code = error.statusCode && error.statusCode < 500
-      ? error.code
-      : safeErrorCode(error);
-    const data = { error: code || 'request_failed' };
+    const data = { error: safeErrorCode(error) };
     return {
       isError: true,
       content: [{ type: 'text', text: JSON.stringify(data) }],

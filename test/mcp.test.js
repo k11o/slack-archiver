@@ -234,12 +234,16 @@ test('MCP tool failures expose safe error codes without leaking exception messag
   const clientError = await safeTool(async () => {
     throw Object.assign(new Error('invalid query'), { statusCode: 400, code: 'invalid_query' });
   });
+  const unsafeClientError = await safeTool(async () => {
+    throw Object.assign(new Error('private request details'), { statusCode: 400, code: 'private details' });
+  });
 
   assert.deepEqual(parameterError.structuredContent, { error: 'ParameterNotFound' });
   assert.deepEqual(dynamoError.structuredContent, { error: 'ResourceNotFoundException' });
   assert.deepEqual(genericError.structuredContent, { error: 'request_failed' });
   assert.deepEqual(clientError.structuredContent, { error: 'invalid_query' });
-  assert.doesNotMatch(JSON.stringify([parameterError, dynamoError, genericError]), /secret parameter value|private request details/);
+  assert.deepEqual(unsafeClientError.structuredContent, { error: 'request_failed' });
+  assert.doesNotMatch(JSON.stringify([parameterError, dynamoError, genericError, unsafeClientError]), /secret parameter value|private request details/);
 });
 
 test('MCP handler rejects missing or non-HTTPS resource configuration', () => {
