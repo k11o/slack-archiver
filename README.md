@@ -112,9 +112,10 @@ uv run sam build
 uv run sam deploy --guided
 ```
 
-Before deployment, store Slack secrets in SSM Parameter Store:
+Before deployment, store secrets and the cursor encryption key in SSM Parameter Store:
 
 - `/slack-archiver/slack-signing-secret`
+- `/slack-archiver/ai-cursor-encryption-key` (generate a random 32-byte key)
 - `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token`
 - `/slack-archiver/slack-oidc-client-id`
 - `/slack-archiver/slack-oidc-client-secret`

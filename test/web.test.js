@@ -46,6 +46,19 @@ test('web search rejects users outside the optional Slack workspace allowlist', 
   assert.deepEqual(JSON.parse(response.body), { error: 'forbidden_workspace' });
 });
 
+test('web search reports channel-visibility failures instead of returning false misses', async () => {
+  const handler = createSearchHandler({
+    getBotToken: async () => 'xoxb-token',
+    listChannels: async () => { throw new Error('Slack temporarily unavailable'); },
+    ddbSend: async () => { throw new Error('search must not run without visibility'); },
+    verifyAuth: async () => ({ 'custom:slack_team_id': 'T_LOGIN' }),
+  });
+
+  const response = await handler(eventWithQuery({ q: 'hello' }));
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(JSON.parse(response.body), { error: 'channel_visibility_unavailable' });
+});
+
 test('web search scopes results to the logged-in Slack workspace', async () => {
   const hit = message({ ts: '1710000001.000000', text: 'hello world' });
   const handler = createSearchHandler({
@@ -78,6 +91,7 @@ test('web search scopes results to the logged-in Slack workspace', async () => {
   assert.equal(body.results.length, 1);
   assert.equal(body.results[0].channel_name, '#general');
   assert.equal(body.results[0].user_name, 'alice');
+  assert.equal(body.search_incomplete, false);
 });
 
 test('web search scopes results using the namespaced team_id claim', async () => {

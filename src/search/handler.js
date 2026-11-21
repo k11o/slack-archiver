@@ -5,6 +5,7 @@ const { DynamoDBDocumentClient, GetCommand, QueryCommand } = require('@aws-sdk/l
 const { emojify } = require('node-emoji');
 const { parseBody, verifySlackSignature } = require('../common/slack');
 const { normalizeText, tokenize } = require('../common/text');
+const { listSlackChannels } = require('../common/slack-channels');
 
 const ssm = new SSMClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -18,6 +19,7 @@ const MAX_CANDIDATES = 25;
 const MAX_HITS = 5;
 const CONTEXT_SIZE = 5;
 const CONTEXT_PAGE_LIMIT = 25;
+const MAX_INDEX_PAGES = 5;
 
 async function getSigningSecret() {
   if (cachedSigningSecret) return cachedSigningSecret;
@@ -89,14 +91,6 @@ async function fetchSlackUser({ botToken, userId }) {
   return name;
 }
 
-async function fetchSlackChannel({ botToken, channelId }) {
-  const response = await fetch(`https://slack.com/api/conversations.info?channel=${encodeURIComponent(channelId)}`, {
-    headers: { authorization: `Bearer ${botToken}` },
-  });
-  const payload = await response.json();
-  return response.ok && payload.ok ? payload.channel : null;
-}
-
 async function invokeSearchWorker({ body }) {
   await lambda.send(new InvokeCommand({
     FunctionName: process.env.SEARCH_WORKER_FUNCTION_NAME,
@@ -133,43 +127,48 @@ function createWorker({
   ddbSend,
   slackPost,
   slackUserInfo = fetchSlackUser,
-  slackChannelInfo = fetchSlackChannel,
+  listChannels = listSlackChannels,
   responsePost = postResponseUrl,
 }) {
   return async (event) => {
     const body = event.body || {};
     const query = normalizeText(body.text || '');
     const teamId = body.team_id;
-    const hits = await searchMessages({ query, teamId, ddbSend });
-    if (!hits.length) {
+    const botToken = await loadBotToken({ teamId });
+    let publicChannelIds;
+    try {
+      publicChannelIds = new Set((await listChannels({ botToken })).map((channel) => channel.id));
+    } catch (error) {
+      const retryAfter = Number.isFinite(error.retryAfterSeconds)
+        ? ` ${Math.ceil(error.retryAfterSeconds)}秒後に再試行してください。`
+        : '時間をおいて再試行してください。';
       await responsePost({
         responseUrl: body.response_url,
-        body: { response_type: 'ephemeral', text: `見つかりませんでした: ${query}` },
+        body: { response_type: 'ephemeral', text: `公開チャンネルを確認できませんでした。${retryAfter}` },
       });
       return empty();
     }
 
-    const botToken = await loadBotToken({ teamId });
-    const publicChannelIds = new Set();
-    for (const channelId of new Set(hits.map((hit) => hit.channel_id))) {
-      const channel = await slackChannelInfo({ botToken, channelId });
-      if (channel?.is_private === false) publicChannelIds.add(channelId);
-    }
-    const publicHits = hits.filter((hit) => publicChannelIds.has(hit.channel_id)).slice(0, MAX_HITS);
-    if (!publicHits.length) {
+    const { messages: hits, hasMore } = await searchMessages({ query, teamId, ddbSend, publicChannelIds });
+    if (!hits.length) {
+      const text = hasMore
+        ? `候補が多いため検索を完了できませんでした。検索語を絞ってください: ${query}`
+        : `見つかりませんでした: ${query}`;
       await responsePost({
         responseUrl: body.response_url,
-        body: { response_type: 'ephemeral', text: `見つかりませんでした: ${query}` },
+        body: { response_type: 'ephemeral', text },
       });
       return empty();
     }
+
+    const publicHits = hits.slice(0, MAX_HITS);
 
     const requesterName = await resolveUserName({ botToken, userId: body.user_id, slackUserInfo });
     const parent = await slackPost({
       botToken,
       message: {
         channel: body.channel_id,
-        text: `${requesterName} の検索: \`${escapeSlackText(query)}\` (${publicHits.length}件${publicHits.length === MAX_HITS ? '、上限まで表示' : ''})`,
+        text: `${requesterName} の検索: \`${escapeSlackText(query)}\` (${publicHits.length}件${publicHits.length === MAX_HITS ? '、上限まで表示' : ''}${hasMore ? '、一部候補は未検索' : ''})`,
         unfurl_links: false,
         unfurl_media: false,
       },
@@ -207,27 +206,45 @@ async function postResponseUrl({ responseUrl, body }) {
   return response;
 }
 
-async function searchMessages({ query, teamId, ddbSend }) {
+async function searchMessages({ query, teamId, ddbSend, publicChannelIds }) {
   const tokens = tokenize(query).slice(0, MAX_QUERY_TOKENS);
-  if (!teamId || !tokens.length) return [];
+  if (!teamId || !tokens.length) return { messages: [], hasMore: false };
   const candidates = new Map();
+  let hasMore = false;
 
   for (const token of tokens) {
-    const result = await ddbSend(new QueryCommand({
-      TableName: process.env.SEARCH_INDEX_TABLE,
-      KeyConditionExpression: 'pk = :pk',
-      ExpressionAttributeValues: { ':pk': `workspace#${teamId}#token#${token}` },
-      ScanIndexForward: false,
-      Limit: 25,
-    }));
+    let lastKey;
+    let pages = 0;
+    const tokenCandidates = new Set();
+    do {
+      const result = await ddbSend(new QueryCommand({
+        TableName: process.env.SEARCH_INDEX_TABLE,
+        KeyConditionExpression: 'pk = :pk',
+        ExpressionAttributeValues: { ':pk': `workspace#${teamId}#token#${token}` },
+        ScanIndexForward: false,
+        Limit: 25,
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }));
 
-    for (const item of result.Items || []) {
-      if (item.team_id && item.team_id !== teamId) continue;
-      const key = `${item.message_pk}|${item.message_sk}`;
-      const candidate = candidates.get(key) || { pk: item.message_pk, sk: item.message_sk, score: 0 };
-      candidate.score += 1;
-      candidates.set(key, candidate);
-    }
+      for (const item of result.Items || []) {
+        const channelPrefix = `workspace#${teamId}#channel#`;
+        if ((item.team_id && item.team_id !== teamId)
+          || typeof item.message_pk !== 'string'
+          || !item.message_pk.startsWith(channelPrefix)
+          || typeof item.message_sk !== 'string') continue;
+        const channelId = item.message_pk.slice(channelPrefix.length);
+        if (publicChannelIds && !publicChannelIds.has(channelId)) continue;
+        const key = JSON.stringify([item.message_pk, item.message_sk]);
+        tokenCandidates.add(key);
+        const candidate = candidates.get(key) || { pk: item.message_pk, sk: item.message_sk, score: 0 };
+        candidate.score += 1;
+        candidates.set(key, candidate);
+      }
+
+      lastKey = result.LastEvaluatedKey;
+      pages += 1;
+    } while (lastKey && tokenCandidates.size < MAX_CANDIDATES && pages < MAX_INDEX_PAGES);
+    if (lastKey) hasMore = true;
   }
 
   const rankedCandidates = [...candidates.values()]
@@ -243,9 +260,8 @@ async function searchMessages({ query, teamId, ddbSend }) {
     if (result.Item && result.Item.team_id === teamId && isSearchableMessage(result.Item, query)) {
       messages.push(result.Item);
     }
-    if (messages.length >= MAX_CANDIDATES) break;
   }
-  return messages;
+  return { messages, hasMore };
 }
 
 function isSearchableMessage(message, query) {

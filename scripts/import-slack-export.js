@@ -5,12 +5,11 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const {
   DynamoDBDocumentClient,
   BatchGetCommand,
-  BatchWriteCommand,
   PutCommand,
 } = require('@aws-sdk/lib-dynamodb');
-const { normalizeText, tokenize } = require('../src/common/text');
+const { normalizeText, tokenize, isIndexableToken } = require('../src/common/text');
+const { reconcileSearchIndex } = require('../src/ingest/handler');
 
-const MAX_BATCH_WRITE = 25;
 const MAX_BATCH_GET = 100;
 
 function parseArgs(argv) {
@@ -174,7 +173,7 @@ function buildMessageItem({ message, teamId, channel }) {
 }
 
 function buildIndexWriteRequests(message) {
-  return tokenize(message.text).map((token) => ({
+  return tokenize(message.text).filter(isIndexableToken).map((token) => ({
     PutRequest: {
       Item: {
         pk: `workspace#${message.team_id}#token#${token}`,
@@ -223,29 +222,6 @@ async function batchGetExistingKeys({ ddb, tableName, keys }) {
   return existing;
 }
 
-async function batchWrite({ ddb, tableName, requests, dryRun, label, sleep = wait }) {
-  let written = 0;
-  for (let i = 0; i < requests.length; i += MAX_BATCH_WRITE) {
-    let pending = requests.slice(i, i + MAX_BATCH_WRITE);
-    if (dryRun) {
-      written += pending.length;
-    } else {
-      for (let attempt = 0; pending.length && attempt < 5; attempt += 1) {
-        const response = await ddb.send(new BatchWriteCommand({ RequestItems: { [tableName]: pending } }));
-        const unprocessed = response.UnprocessedItems?.[tableName] || [];
-        written += pending.length - unprocessed.length;
-        pending = unprocessed;
-        if (pending.length && attempt < 4) await sleep(25 * (2 ** attempt));
-      }
-      if (pending.length) throw new Error(`${label}: ${pending.length} writes remained unprocessed`);
-    }
-    if (written % 250 === 0 || i + MAX_BATCH_WRITE >= requests.length) {
-      process.stderr.write(`${label}: ${written}/${requests.length}\n`);
-    }
-  }
-  return written;
-}
-
 async function putNewMessages({ ddb, tableName, items, dryRun }) {
   if (dryRun) return items;
   const inserted = [];
@@ -262,10 +238,6 @@ async function putNewMessages({ ddb, tableName, items, dryRun }) {
     }
   }
   return inserted;
-}
-
-function wait(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function importSlackExport({
@@ -330,7 +302,6 @@ async function importSlackExport({
     });
     const newMessages = uniqueCandidates.filter((item) => !existing.has(`${item.pk}\0${item.sk}`));
     stats.skippedDuplicate += uniqueCandidates.length - newMessages.length;
-    if (!newMessages.length) continue;
 
     const insertedMessages = await putNewMessages({
       ddb,
@@ -341,22 +312,24 @@ async function importSlackExport({
     stats.imported += insertedMessages.length;
     stats.skippedDuplicate += newMessages.length - insertedMessages.length;
 
-    const indexRequests = [];
-    for (const message of insertedMessages) {
-      for (const request of buildIndexWriteRequests(message)) indexRequests.push(request);
+    if (dryRun) {
+      const indexRequests = insertedMessages.flatMap(buildIndexWriteRequests);
+      const { unique: uniqueIndexRequests } = uniqueByKey(
+        indexRequests,
+        (request) => `${request.PutRequest.Item.pk}\0${request.PutRequest.Item.sk}`,
+      );
+      stats.indexWritten += uniqueIndexRequests.length;
+      continue;
     }
-    const { unique: uniqueIndexRequests } = uniqueByKey(
-      indexRequests,
-      (request) => `${request.PutRequest.Item.pk}\0${request.PutRequest.Item.sk}`,
-    );
-    // shortcut: index batches can race with live revisions; reindex after overlapping imports.
-    stats.indexWritten += await batchWrite({
-      ddb,
-      tableName: indexTable,
-      requests: uniqueIndexRequests,
-      dryRun,
-      label: 'index',
-    });
+
+    for (const candidate of uniqueCandidates) {
+      stats.indexWritten += await reconcileSearchIndex({
+        message: candidate,
+        ddbSend: (command) => ddb.send(command),
+        messagesTable,
+        indexTable,
+      });
+    }
   }
 
   process.stderr.write(`import: done ${JSON.stringify(stats)}${dryRun ? ' [dry-run]' : ''}\n`);
@@ -403,7 +376,6 @@ module.exports = {
   isIgnoredExportMessage,
   buildMessageItem,
   buildIndexWriteRequests,
-  batchWrite,
   putNewMessages,
   importSlackExport,
 };

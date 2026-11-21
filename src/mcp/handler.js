@@ -41,7 +41,9 @@ function createMcpHandler({
   getMessage = getArchivedMessage,
   getThread = getArchivedThread,
 }) {
+  if (typeof resource !== 'string' || !resource.trim()) throw new Error('MCP resource URL is required');
   const resourceUrl = new URL(resource);
+  if (resourceUrl.protocol !== 'https:') throw new Error('MCP resource URL must use HTTPS');
   const metadataPath = `/.well-known/oauth-protected-resource${resourceUrl.pathname.replace(/\/$/, '')}`;
   const metadataUrl = `${resourceUrl.origin}${metadataPath}`;
   const allowedOriginSet = new Set([
@@ -88,15 +90,15 @@ function createMcpHandler({
       });
       await server.connect(transport);
       const response = await transport.handleRequest(toWebRequest(event, resourceUrl), { authInfo: auth.authInfo });
-      const body = await response.text();
-      if (Buffer.byteLength(body) > MAX_RESPONSE_BYTES) {
-        return json({ error: 'response_too_large' }, 413);
-      }
-      return {
+      const result = {
         statusCode: response.status,
         headers: Object.fromEntries(response.headers.entries()),
-        body,
+        body: await response.text(),
       };
+      if (Buffer.byteLength(JSON.stringify(result)) > MAX_RESPONSE_BYTES) {
+        return json({ error: 'response_too_large' }, 413);
+      }
+      return result;
     } catch {
       return json({ error: 'mcp_request_failed' }, 500);
     } finally {
@@ -117,7 +119,7 @@ function createServer({ ddbSend, loadBotToken, listChannels, serialize, search, 
     inputSchema: {
       query: z.string().min(1).max(500),
       mode: z.enum(['phrase', 'and']).optional(),
-      channel_id: z.string().regex(/^C[A-Z0-9]{2,}$/).optional(),
+      channel_id: z.string().regex(/^[CG][A-Z0-9]{2,}$/).optional(),
       after: z.string().optional(),
       before: z.string().optional(),
       limit: z.number().int().min(1).max(50).optional(),
@@ -125,9 +127,14 @@ function createServer({ ddbSend, loadBotToken, listChannels, serialize, search, 
     },
   }, async (args, extra) => safeTool(async () => {
     const result = await search({
-      ...args,
-      teamId: getTeamId(extra),
+      query: args.query,
+      mode: args.mode,
       channelId: args.channel_id,
+      after: args.after,
+      before: args.before,
+      limit: args.limit,
+      cursor: args.cursor,
+      teamId: getTeamId(extra),
       ddbSend,
     });
     return {
@@ -146,7 +153,7 @@ function createServer({ ddbSend, loadBotToken, listChannels, serialize, search, 
     title: 'Get an archived Slack message',
     description: 'Retrieve one non-deleted public-channel message from the authenticated Slack workspace, including an authenticated archive_url source link.',
     inputSchema: {
-      channel_id: z.string().regex(/^C[A-Z0-9]{2,}$/),
+      channel_id: z.string().regex(/^[CG][A-Z0-9]{2,}$/),
       ts: z.string().regex(/^\d{1,12}\.\d{6}$/),
     },
   }, async (args, extra) => safeTool(async () => {
@@ -160,9 +167,9 @@ function createServer({ ddbSend, loadBotToken, listChannels, serialize, search, 
 
   server.registerTool('get_thread', {
     title: 'Get an archived Slack thread page',
-    description: 'Retrieve a thread root and up to 50 replies in timestamp order. Continue with next_cursor until it is null. Deleted messages are omitted.',
+    description: 'Retrieve an archived thread root, when available, and up to 50 replies in timestamp order. A deleted root may be null while replies remain available. Continue with next_cursor until it is null.',
     inputSchema: {
-      channel_id: z.string().regex(/^C[A-Z0-9]{2,}$/),
+      channel_id: z.string().regex(/^[CG][A-Z0-9]{2,}$/),
       root_ts: z.string().regex(/^\d{1,12}\.\d{6}$/),
       limit: z.number().int().min(1).max(50).optional(),
       cursor: z.string().max(8192).optional(),
@@ -178,15 +185,22 @@ function createServer({ ddbSend, loadBotToken, listChannels, serialize, search, 
       ddbSend,
     });
     if (!result) throw apiError(404, 'thread_not_found');
+    const hasRoot = Boolean(result.root);
     const messages = await serialize({
-      messages: [result.root, ...result.replies],
+      messages: [...(hasRoot ? [result.root] : []), ...result.replies],
       teamId,
       loadBotToken,
       listChannels,
       webBaseUrl: process.env.WEB_BASE_URL,
     });
-    if (!messages[0]) throw apiError(404, 'thread_not_found');
-    return { root: messages[0], replies: messages.slice(1), next_cursor: result.next_cursor };
+    if ((hasRoot && !messages[0]) || (!messages.length && !result.next_cursor)) {
+      throw apiError(404, 'thread_not_found');
+    }
+    return {
+      root: hasRoot ? messages[0] : null,
+      replies: messages.slice(hasRoot ? 1 : 0),
+      next_cursor: result.next_cursor,
+    };
   }));
 
   server.registerTool('list_channels', {

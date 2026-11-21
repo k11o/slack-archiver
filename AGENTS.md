@@ -42,9 +42,10 @@ uv run sam deploy \
 
 ## Secrets
 
-- Never commit Slack secrets or tokens.
+- Never commit Slack secrets, cursor-encryption keys, or tokens.
 - Required SSM SecureString parameters:
   - `/slack-archiver/slack-signing-secret` (shared across workspaces)
+  - `/slack-archiver/ai-cursor-encryption-key` (shared cursor encryption key; separate from Slack secrets)
   - `/slack-archiver/slack-oidc-client-id` (Slack app Client ID, shared by OIDC login and bot install OAuth exchange)
   - `/slack-archiver/slack-oidc-client-secret` (Slack app Client Secret, shared by OIDC login and bot install OAuth exchange)
   - `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` (one per installed Slack workspace; written automatically by `InstallFunction` on install)

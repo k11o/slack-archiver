@@ -127,7 +127,7 @@ test('searchArchivedMessages resumes only the same query and team', async () => 
   );
 });
 
-test('getArchivedMessage never reads private channels and hides deleted records', async () => {
+test('getArchivedMessage rejects non-channel IDs and hides deleted records', async () => {
   process.env.MESSAGES_TABLE = 'messages-table';
   let calls = 0;
   const ddbSend = async () => {
@@ -135,9 +135,25 @@ test('getArchivedMessage never reads private channels and hides deleted records'
     return { Item: message({ deleted: true, text: '' }) };
   };
 
-  assert.equal(await getArchivedMessage({ teamId: TEAM_ID, channelId: 'G123', ts: TS, ddbSend }), null);
+  assert.equal(await getArchivedMessage({ teamId: TEAM_ID, channelId: 'D123', ts: TS, ddbSend }), null);
   assert.equal(await getArchivedMessage({ teamId: TEAM_ID, channelId: CHANNEL_ID, ts: TS, ddbSend }), null);
   assert.equal(calls, 1);
+});
+
+test('archive service accepts legacy G-prefixed IDs for public channels', async () => {
+  process.env.MESSAGES_TABLE = 'messages-table';
+  const publicChannelMessage = message({
+    pk: `workspace#${TEAM_ID}#channel#G123`,
+    channel_id: 'G123',
+  });
+  const result = await getArchivedMessage({
+    teamId: TEAM_ID,
+    channelId: 'G123',
+    ts: TS,
+    ddbSend: async () => ({ Item: publicChannelMessage }),
+  });
+
+  assert.equal(result, publicChannelMessage);
 });
 
 test('getArchivedThread returns public replies with a continuation cursor', async () => {
@@ -175,6 +191,44 @@ test('getArchivedThread returns public replies with a continuation cursor', asyn
   assert.equal(calls[1].input.ConsistentRead, true);
 });
 
+test('getArchivedThread returns replies when its root was deleted', async () => {
+  process.env.MESSAGES_TABLE = 'messages-table';
+  const reply = message({ ts: '1710000002.000000', sk: 'ts#1710000002.000000', thread_ts: TS });
+  const result = await getArchivedThread({
+    teamId: TEAM_ID,
+    channelId: CHANNEL_ID,
+    rootTs: TS,
+    cursorSecret: 'test-cursor-secret',
+    ddbSend: async (command) => command.constructor.name === 'GetCommand'
+      ? {}
+      : { Items: [reply], LastEvaluatedKey: null },
+  });
+
+  assert.equal(result.root, null);
+  assert.deepEqual(result.replies, [reply]);
+});
+
+test('AI thread API returns replies when the archived root is deleted', async () => {
+  const reply = message({ ts: '1710000002.000000', thread_ts: TS, text: 'reply remains' });
+  const handler = createAiApiHandler({
+    verifyAuth: async () => ({ 'https://slack.com/team_id': TEAM_ID }),
+    getThread: async () => ({ root: null, replies: [reply], next_cursor: null }),
+    loadBotToken: async () => 'bot-token',
+    listChannels: async () => [{ id: CHANNEL_ID, name: 'general' }],
+    loadNames: async () => new Map(),
+    webBaseUrl: 'https://archive.example',
+  });
+  const response = await handler(apiEvent({
+    method: 'GET',
+    path: `/api/ai/threads/${CHANNEL_ID}/${TS}`,
+    pathParameters: { channelId: CHANNEL_ID, rootTs: TS },
+  }));
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).root, null);
+  assert.equal(JSON.parse(response.body).replies[0].text, 'reply remains');
+});
+
 test('AI search API uses the verified workspace and returns authenticated archive links', async () => {
   const hit = message();
   const handler = createAiApiHandler({
@@ -207,8 +261,8 @@ test('AI search API uses the verified workspace and returns authenticated archiv
   assert.equal(body.next_cursor, 'next');
 });
 
-test('AI API bounds large search responses below the Lambda payload limit', async () => {
-  const text = 'x'.repeat(3 * 1024 * 1024);
+test('AI API bounds the serialized Lambda response envelope', async () => {
+  const text = '"'.repeat(2 * 1024 * 1024);
   const handler = createAiApiHandler({
     verifyAuth: async () => ({ 'https://slack.com/team_id': TEAM_ID }),
     search: async () => ({

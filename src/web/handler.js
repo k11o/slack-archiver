@@ -15,7 +15,7 @@ const {
   verifyCognitoJwt,
 } = require('./auth');
 const { formatWorkspaceLabel } = require('./workspace');
-const { listSlackChannels } = require('../export/handler');
+const { listSlackChannels } = require('../common/slack-channels');
 
 const workspaceScript = fs.readFileSync(path.join(__dirname, 'workspace.js'), 'utf8');
 
@@ -71,13 +71,28 @@ function createSearchHandler({
     const { teamId } = auth;
 
     const query = String(event.queryStringParameters?.q || '').trim();
-    if (!query) return json({ results: [] });
+    if (!query) return json({ results: [], search_incomplete: false });
 
-    const botToken = await loadBotToken({ teamId });
-    const hits = await search({ query, teamId, ddbSend });
-    const channelNames = new Map(hits.length
-      ? (await listChannels({ botToken })).map((channel) => [channel.id, channel.name])
-      : []);
+    let channels;
+    let botToken;
+    try {
+      botToken = await loadBotToken({ teamId });
+      channels = await listChannels({ botToken });
+    } catch (error) {
+      const headers = Number.isFinite(error.retryAfterSeconds)
+        ? { 'retry-after': String(Math.ceil(error.retryAfterSeconds)) }
+        : {};
+      return json({ error: 'channel_visibility_unavailable' }, 503, headers);
+    }
+    const searchResult = await search({
+      query,
+      teamId,
+      ddbSend,
+      publicChannelIds: new Set(channels.map((channel) => channel.id)),
+    });
+    const hits = Array.isArray(searchResult) ? searchResult : searchResult.messages;
+    const searchIncomplete = !Array.isArray(searchResult) && Boolean(searchResult.hasMore);
+    const channelNames = new Map(channels.map((channel) => [channel.id, channel.name]));
 
     const results = [];
     for (const hit of hits) {
@@ -88,7 +103,7 @@ function createSearchHandler({
       if (results.length >= MAX_HITS) break;
     }
 
-    return json({ results });
+    return json({ results, search_incomplete: searchIncomplete });
   };
 }
 
@@ -290,7 +305,7 @@ function renderPage(config) {
       const params = new URLSearchParams(window.location.search);
       const channelId = params.get("channel_id");
       const ts = params.get("ts");
-      if (/^C[A-Z0-9]{2,}$/.test(channelId || "") && /^\\d{1,12}\\.\\d{6}$/.test(ts || "")) {
+      if (/^[CG][A-Z0-9]{2,}$/.test(channelId || "") && /^\\d{1,12}\\.\\d{6}$/.test(ts || "")) {
         sessionStorage.setItem(deepLinkKey, JSON.stringify({ channelId, ts }));
       }
       if (params.has("code")) {
@@ -387,8 +402,12 @@ function renderPage(config) {
         statusEl.textContent = "Authentication failed. Please sign in again.";
         return;
       }
+      if (!response.ok) {
+        statusEl.textContent = "Search is temporarily unavailable. Please try again.";
+        return;
+      }
       const payload = await response.json();
-      renderResults(payload.results || []);
+      renderResults(payload.results || [], payload.search_incomplete);
     }
 
     async function loadArchivedMessage({ channelId, ts }) {
@@ -424,8 +443,10 @@ function renderPage(config) {
       }
     }
 
-    function renderResults(results) {
-      statusEl.textContent = results.length ? results.length + " result(s)" : "No messages found.";
+    function renderResults(results, incomplete = false) {
+      statusEl.textContent = incomplete
+        ? "Search reached its candidate limit. Narrow the query to see more results."
+        : results.length ? results.length + " result(s)" : "No messages found.";
       resultsEl.innerHTML = results.map((result) => {
         const context = result.context.map((message) => {
           const rowClass = message.is_hit ? "context-hit" : "";
@@ -530,6 +551,14 @@ function renderPage(config) {
         return;
       }
       const payload = await response.json().catch(() => ({}));
+      if (response.status === 503 && payload.error === "channel_visibility_unavailable") {
+        const retryAfter = Number(response.headers.get("retry-after"));
+        const backoff = Math.min(2000 * (2 ** Math.min(retryCount, 4)), 30000);
+        const delay = Math.max(backoff, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0);
+        exportStatus.textContent = "Slack channel visibility is unavailable. Retrying...";
+        window.setTimeout(() => pollExport(jobId, retryCount + 1), delay);
+        return;
+      }
       if (!response.ok) {
         exportButton.disabled = false;
         exportStatus.textContent = exportErrorMessage(payload.error);
@@ -614,10 +643,10 @@ function html(body) {
   };
 }
 
-function json(body, statusCode = 200) {
+function json(body, statusCode = 200, headers = {}) {
   return {
     statusCode,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
+    headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
     body: JSON.stringify(body),
   };
 }

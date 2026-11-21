@@ -54,7 +54,8 @@ function createMcpAuthenticator({
       || !scopes.includes('openid')
       || !scopes.includes(REQUIRED_SCOPE)
       || !claims.sub
-      || !Number.isFinite(Number(claims.exp))) {
+      || !Number.isFinite(Number(claims.exp))
+      || Number(claims.exp) <= Math.floor(Date.now() / 1000)) {
       return { error: 'unauthorized', statusCode: 401 };
     }
 

@@ -130,6 +130,21 @@ test('ingest ignores bot, app-generated, non-public, and unsupported message eve
     },
   }));
   assert.equal(privateCId.body, 'ignored');
+  const privateGroup = await handler(event({
+    event: { type: 'message', channel: 'GPRIVATE', channel_type: 'group', user: 'U123', ts: '1710000003.000000', text: 'private' },
+  }));
+  assert.equal(privateGroup.body, 'ignored');
+});
+
+test('ingest accepts a converted public channel with a legacy G ID', async () => {
+  const ddb = memoryDdb();
+  const handler = makeHandler(ddb);
+  const response = await handler(event({
+    event: { type: 'message', channel: 'G123', channel_type: 'channel', user: 'U123', ts: '1710000001.000000', text: 'public legacy channel' },
+  }));
+
+  assert.equal(response.body, 'ok');
+  assert.equal([...ddb.records.values()][0].text, 'public legacy channel');
 });
 
 test('ingest stores workspace-scoped messages and token index entries', async () => {
@@ -320,12 +335,47 @@ test('message_deleted clears content, removes index entries, and blocks stale re
   assert.equal(item.deleted, true);
   assert.equal(item.text, '');
   assert.equal(item.normalized_text, '');
+  assert.equal(item.subtype, 'message_deleted');
+  assert.equal(item.bot_id, null);
   assert.deepEqual(item.search_tokens, []);
   assert.equal(ddb.indexes.has(indexKey('T123', 'secret')), false);
 
   await handler(event({ event: original }));
   assert.equal(ddb.records.get(keyOf(item)).deleted, true);
   assert.equal(ddb.records.get(keyOf(item)).text, '');
+});
+
+test('message_changed tombstones are handled as deletions', async () => {
+  const ddb = memoryDdb();
+  const handler = makeHandler(ddb);
+  const original = {
+    type: 'message', channel: 'C123', user: 'U123',
+    ts: '1710000001.000000', text: 'tombstone secret',
+  };
+  await handler(event({ event: original }));
+  await handler(event({
+    event: {
+      type: 'message',
+      subtype: 'message_changed',
+      channel: 'C123',
+      ts: '1710000005.000000',
+      previous_message: original,
+      message: {
+        subtype: 'tombstone',
+        ts: original.ts,
+        edited: { ts: '1710000005.000000' },
+      },
+    },
+  }));
+
+  const tombstone = ddb.records.get(keyOf({
+    pk: 'workspace#T123#channel#C123',
+    sk: `ts#${original.ts}`,
+  }));
+  assert.equal(tombstone.deleted, true);
+  assert.equal(tombstone.text, '');
+  assert.equal(ddb.indexes.has(indexKey('T123', 'tombstone')), false);
+  assert.equal(ddb.indexes.has(indexKey('T123', 'secret')), false);
 });
 
 test('a deletion arriving before the original post leaves a tombstone', async () => {

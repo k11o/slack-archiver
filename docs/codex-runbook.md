@@ -110,6 +110,14 @@ aws ssm put-parameter \
 aws ssm put-parameter \
   --profile <AWS_PROFILE> \
   --region ap-northeast-1 \
+  --name /slack-archiver/ai-cursor-encryption-key \
+  --type SecureString \
+  --value "$(openssl rand -base64 32)" \
+  --overwrite
+
+aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
   --name /slack-archiver/workspaces/<TEAM_ID>/slack-bot-token \
   --type SecureString \
   --value '<SLACK_BOT_USER_OAUTH_TOKEN>' \

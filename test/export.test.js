@@ -14,6 +14,7 @@ const {
   writeChannelCsv,
 } = require('../src/export/handler');
 const { resolveUserId } = require('../src/web/auth');
+const { getSlackChannel, slackApi } = require('../src/common/slack-channels');
 
 process.env.MESSAGES_TABLE = 'messages-table';
 process.env.EXPORT_JOBS_TABLE = 'export-jobs-table';
@@ -34,6 +35,48 @@ test('resolveUserId accepts matching Slack user claims and rejects mismatches', 
     'custom:slack_user_id': 'U1',
     'https://slack.com/user_id': 'U2',
   }), null);
+});
+
+test('channel lookup hides inaccessible channels but propagates transient Slack failures', async () => {
+  const channel = await getSlackChannel({
+    botToken: 'bot-token',
+    channelId: 'C1',
+    slackRequest: async () => { throw Object.assign(new Error('not found'), { slackError: 'channel_not_found' }); },
+  });
+  assert.equal(channel, null);
+  await assert.rejects(getSlackChannel({
+    botToken: 'bot-token',
+    channelId: 'C1',
+    slackRequest: async () => { throw Object.assign(new Error('unavailable'), { slackError: 'service_unavailable' }); },
+  }), /unavailable/);
+});
+
+test('Slack API honors a short Retry-After and exposes longer retry delays', async () => {
+  let calls = 0;
+  const delays = [];
+  const result = await slackApi({
+    botToken: 'xoxb-token',
+    method: 'conversations.info',
+    fetchImpl: async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response(JSON.stringify({ ok: false, error: 'ratelimited' }), { status: 429, headers: { 'retry-after': '2' } })
+        : new Response(JSON.stringify({ ok: true, channel: { id: 'C1' } }), { status: 200 });
+    },
+    sleep: async (milliseconds) => delays.push(milliseconds),
+  });
+
+  assert.equal(result.channel.id, 'C1');
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [2000]);
+  await assert.rejects(slackApi({
+    botToken: 'xoxb-token',
+    method: 'conversations.info',
+    fetchImpl: async () => new Response(JSON.stringify({ ok: false, error: 'ratelimited' }), {
+      status: 429, headers: { 'retry-after': '30' },
+    }),
+    sleep: async () => { throw new Error('long delays must be propagated'); },
+  }), { retryAfterSeconds: 30 });
 });
 
 test('listSlackChannels follows Slack pagination and returns a sorted public-channel list', async () => {
@@ -195,7 +238,11 @@ test('completed export status returns a short-lived download URL to its owner', 
       },
     }),
     loadBotToken: async () => 'bot-token',
-    listChannels: async () => [{ id: 'C1', name: 'general', is_archived: false }],
+    getChannel: async ({ botToken, channelId }) => {
+      assert.equal(botToken, 'bot-token');
+      assert.equal(channelId, 'C1');
+      return { id: 'C1', is_private: false };
+    },
     createDownloadUrl: async (job) => {
       assert.equal(job.object_key, 'exports/T123/U_REQUESTER/job-1.csv');
       return 'https://download.example/signed';
@@ -208,6 +255,42 @@ test('completed export status returns a short-lived download URL to its owner', 
   assert.equal(response.statusCode, 200);
   assert.equal(job.download_url, 'https://download.example/signed');
   assert.equal(job.download_expires_in, 900);
+});
+
+test('export status rechecks one channel and does not issue a URL after it becomes private', async () => {
+  const handler = createExportStatusHandler({
+    verifyAuth: async () => authenticatedClaims,
+    ddbSend: async () => ({ Item: {
+      job_id: 'job-1', team_id: 'T123', user_id: 'U_REQUESTER', channel_id: 'C1', status: 'completed', object_key: 'private.csv',
+    } }),
+    loadBotToken: async () => 'bot-token',
+    getChannel: async ({ channelId }) => {
+      assert.equal(channelId, 'C1');
+      return { is_private: true };
+    },
+    createDownloadUrl: async () => { throw new Error('private exports must not be signed'); },
+  });
+
+  const response = await handler({ headers: {}, pathParameters: { jobId: 'job-1' } });
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(JSON.parse(response.body), { error: 'export_not_found' });
+});
+
+test('export status reports transient Slack visibility failures as retryable', async () => {
+  const handler = createExportStatusHandler({
+    verifyAuth: async () => authenticatedClaims,
+    ddbSend: async () => ({ Item: {
+      job_id: 'job-1', team_id: 'T123', user_id: 'U_REQUESTER', channel_id: 'C1', status: 'completed', object_key: 'private.csv',
+    } }),
+    loadBotToken: async () => 'bot-token',
+    getChannel: async () => { throw Object.assign(new Error('Slack 429'), { retryAfterSeconds: 4 }); },
+    createDownloadUrl: async () => { throw new Error('must not issue a URL'); },
+  });
+
+  const response = await handler({ headers: {}, pathParameters: { jobId: 'job-1' } });
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.headers['retry-after'], '4');
+  assert.deepEqual(JSON.parse(response.body), { error: 'channel_visibility_unavailable' });
 });
 
 test('writeChannelCsv paginates in timestamp order and preserves multiline Japanese text', async () => {

@@ -17,6 +17,7 @@ const {
 } = require('@aws-sdk/lib-dynamodb');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { isArchiverGeneratedMessage } = require('../search/handler');
+const { listSlackChannels, getSlackChannel } = require('../common/slack-channels');
 const { authenticateWebRequest, verifyCognitoJwt } = require('../web/auth');
 
 const EXPORT_TTL_SECONDS = 24 * 60 * 60;
@@ -64,34 +65,6 @@ async function slackApi({ botToken, method, params = {} }) {
     throw new Error(`Slack ${method} failed: ${payload.error || response.status}`);
   }
   return payload;
-}
-
-async function listSlackChannels({ botToken, slackRequest = slackApi }) {
-  const channels = [];
-  let cursor;
-  do {
-    const payload = await slackRequest({
-      botToken,
-      method: 'conversations.list',
-      params: {
-        types: 'public_channel',
-        exclude_archived: 'false',
-        limit: '200',
-        cursor,
-      },
-    });
-    for (const channel of payload.channels || []) {
-      if (channel.id && channel.name) {
-        channels.push({
-          id: channel.id,
-          name: channel.name,
-          is_archived: Boolean(channel.is_archived),
-        });
-      }
-    }
-    cursor = payload.response_metadata?.next_cursor || '';
-  } while (cursor);
-  return channels.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function listSlackUserNames({ botToken, slackRequest = slackApi }) {
@@ -237,7 +210,7 @@ function createExportStatusHandler({
   ddbSend,
   createDownloadUrl,
   loadBotToken = getBotToken,
-  listChannels = listSlackChannels,
+  getChannel = getSlackChannel,
 }) {
   return async (event) => {
     const auth = await authenticateWebRequest({
@@ -260,10 +233,13 @@ function createExportStatusHandler({
     }
     try {
       const botToken = await loadBotToken({ teamId: auth.teamId });
-      const isPublic = (await listChannels({ botToken })).some((channel) => channel.id === job.channel_id);
-      if (!isPublic) return json({ error: 'export_not_found' }, 404);
-    } catch {
-      return json({ error: 'channel_visibility_unavailable' }, 503);
+      const channel = await getChannel({ botToken, channelId: job.channel_id });
+      if (channel?.is_private !== false) return json({ error: 'export_not_found' }, 404);
+    } catch (error) {
+      const headers = Number.isFinite(error.retryAfterSeconds)
+        ? { 'retry-after': String(Math.ceil(error.retryAfterSeconds)) }
+        : {};
+      return json({ error: 'channel_visibility_unavailable' }, 503, headers);
     }
 
     const response = publicJob(job);
@@ -507,10 +483,10 @@ function safeFilename(value) {
     .slice(0, 80) || 'channel';
 }
 
-function json(body, statusCode = 200) {
+function json(body, statusCode = 200, headers = {}) {
   return {
     statusCode,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
+    headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
     body: JSON.stringify(body),
   };
 }

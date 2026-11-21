@@ -5,9 +5,12 @@ const {
   DynamoDBDocumentClient,
   ScanCommand,
   BatchWriteCommand,
+  GetCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { tokenize, isIndexableToken } = require('../src/common/text');
+const { reconcileSearchIndex } = require('../src/ingest/handler');
 
 const MAX_BATCH = 25;
 
@@ -94,7 +97,7 @@ async function deleteOldEntries({ ddb, items, indexTable, dryRun }) {
   });
 }
 
-async function deleteStaleIndexEntries({ ddb, indexTable, desiredKeys, teamId, dryRun }) {
+async function deleteStaleIndexEntries({ ddb, indexTable, messagesTable, desiredKeys, teamId, dryRun }) {
   const prefix = teamId ? `workspace#${teamId}#token#` : 'workspace#';
   const { items } = await scanAll({
     ddb,
@@ -103,28 +106,103 @@ async function deleteStaleIndexEntries({ ddb, indexTable, desiredKeys, teamId, d
     expressionValues: { ':prefix': prefix, ':token_marker': '#token#' },
     dryRun,
   });
-  const stale = items.filter((item) => !desiredKeys.has(`${item.pk}\0${item.sk}`));
-  const deleted = await deleteOldEntries({ ddb, items: stale, indexTable, dryRun });
+  if (dryRun) {
+    const stale = items.filter((item) => !desiredKeys.has(`${item.pk}\0${item.sk}`));
+    return { scanned: items.length, deleted: await deleteOldEntries({ ddb, items: stale, indexTable, dryRun }) };
+  }
+
+  let deleted = 0;
+  for (const item of items) {
+    if (await deleteStaleIndexEntry({ ddb, indexTable, messagesTable, item })) deleted += 1;
+  }
   return { scanned: items.length, deleted };
+}
+
+async function deleteStaleIndexEntry({ ddb, indexTable, messagesTable, item }) {
+  if (!item.message_pk || !item.message_sk) return false;
+  const indexKey = { pk: item.pk, sk: item.sk };
+  const messageKey = { pk: item.message_pk, sk: item.message_sk };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const [indexResult, messageResult] = await Promise.all([
+      ddb.send(new GetCommand({ TableName: indexTable, Key: indexKey, ConsistentRead: true })),
+      ddb.send(new GetCommand({ TableName: messagesTable, Key: messageKey, ConsistentRead: true })),
+    ]);
+    const currentIndex = indexResult.Item;
+    if (!currentIndex) return false;
+    const message = messageResult.Item;
+    const marker = '#token#';
+    const token = currentIndex.token || currentIndex.pk.slice(currentIndex.pk.indexOf(marker) + marker.length);
+    if (message && getSearchTokens(message).includes(token)) return false;
+
+    const messageCondition = message?.revision_ts === undefined
+      ? 'attribute_not_exists(revision_ts)'
+      : 'revision_ts = :messageRevision';
+    const indexCondition = currentIndex.revision_ts === undefined
+      ? 'attribute_not_exists(revision_ts)'
+      : 'revision_ts = :indexRevision';
+    try {
+      await ddb.send(new TransactWriteCommand({
+        TransactItems: [
+          {
+            ConditionCheck: {
+              TableName: messagesTable,
+              Key: messageKey,
+              ConditionExpression: message ? messageCondition : 'attribute_not_exists(pk)',
+              ...(message?.revision_ts === undefined || !message ? {} : {
+                ExpressionAttributeValues: { ':messageRevision': message.revision_ts },
+              }),
+            },
+          },
+          {
+            Delete: {
+              TableName: indexTable,
+              Key: indexKey,
+              ConditionExpression: indexCondition,
+              ...(currentIndex.revision_ts === undefined ? {} : {
+                ExpressionAttributeValues: { ':indexRevision': currentIndex.revision_ts },
+              }),
+            },
+          },
+        ],
+      }));
+      return true;
+    } catch (error) {
+      if (error.name !== 'TransactionCanceledException'
+        && error.name !== 'ConditionalCheckFailedException') throw error;
+    }
+  }
+  throw new Error('search index changed concurrently; retry reindex');
+}
+
+function getSearchTokens(message) {
+  if (!message.team_id || !message.channel_id || !message.ts) return [];
+  return (message.deleted ? [] : (message.search_tokens || tokenize(message.text || '')))
+    .filter(isIndexableToken);
 }
 
 async function clearTombstoneIndexTokens({ ddb, messagesTable, messages, dryRun }) {
   let cleared = 0;
   for (const message of messages) {
-    if (!message.deleted || !message.index_tokens?.length) continue;
-    if (dryRun) continue;
+    if (!message.deleted || dryRun) continue;
+    const result = await ddb.send(new GetCommand({
+      TableName: messagesTable,
+      Key: { pk: message.pk, sk: message.sk },
+      ConsistentRead: true,
+    }));
+    const current = result.Item;
+    if (!current?.deleted || !Array.isArray(current.index_tokens)) continue;
     try {
       await ddb.send(new UpdateCommand({
         TableName: messagesTable,
-        Key: { pk: message.pk, sk: message.sk },
+        Key: { pk: current.pk, sk: current.sk },
         UpdateExpression: 'REMOVE index_tokens',
-        ConditionExpression: message.revision_ts === undefined
+        ConditionExpression: current.revision_ts === undefined
           ? '#deleted = :deleted AND attribute_not_exists(revision_ts)'
           : '#deleted = :deleted AND revision_ts = :revision',
         ExpressionAttributeNames: { '#deleted': 'deleted' },
         ExpressionAttributeValues: {
           ':deleted': true,
-          ...(message.revision_ts === undefined ? {} : { ':revision': message.revision_ts }),
+          ...(current.revision_ts === undefined ? {} : { ':revision': current.revision_ts }),
         },
       }));
       cleared += 1;
@@ -165,16 +243,22 @@ async function reindex({ ddb, messagesTable, indexTable, teamId, limit, dryRun }
     const item = entry.PutRequest.Item;
     return `${item.pk}\0${item.sk}`;
   }));
+  let written = 0;
+  if (dryRun) {
+    written = await writeBatches({ ddb, entries: uniqueEntries, indexTable, dryRun, label: 'reindex' });
+  } else {
+    for (const message of messages) {
+      written += await reconcileSearchIndex({
+        message,
+        ddbSend: (command) => ddb.send(command),
+        messagesTable,
+        indexTable,
+      });
+    }
+  }
   const cleanup = limit
     ? { scanned: 0, deleted: 0 }
-    : await deleteStaleIndexEntries({ ddb, indexTable, desiredKeys, teamId, dryRun });
-  const written = await writeBatches({
-    ddb,
-    entries: uniqueEntries,
-    indexTable,
-    dryRun,
-    label: 'reindex',
-  });
+    : await deleteStaleIndexEntries({ ddb, indexTable, messagesTable, desiredKeys, teamId, dryRun });
   const cleared = limit ? 0 : await clearTombstoneIndexTokens({ ddb, messagesTable, messages, dryRun });
   process.stderr.write(`reindex: done. wrote ${written} index entries, removed ${cleanup.deleted} stale entries, cleared ${cleared} tombstones, skipped ${skipped} messages\n`);
   return { scanned: messages.length, written, skipped, deleted: cleanup.deleted, cleared };

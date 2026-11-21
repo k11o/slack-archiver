@@ -13,7 +13,7 @@ let cachedCursorSecret;
 async function getCursorSecret() {
   if (cachedCursorSecret) return cachedCursorSecret;
   const result = await ssm.send(new GetParameterCommand({
-    Name: process.env.SLACK_SIGNING_SECRET_PARAM || '/slack-archiver/slack-signing-secret',
+    Name: process.env.CURSOR_ENCRYPTION_SECRET_PARAM || '/slack-archiver/ai-cursor-encryption-key',
     WithDecryption: true,
   }));
   cachedCursorSecret = result.Parameter.Value;
@@ -122,7 +122,6 @@ async function getArchivedThread({
   const pageSize = validatePageSize(limit);
   const cursorSecret = suppliedCursorSecret || await getCursorSecret();
   const root = await getArchivedMessage({ teamId, channelId, ts: rootTs, ddbSend });
-  if (!root) return null;
 
   const pk = `workspace#${teamId}#channel#${channelId}`;
   const lastKey = decodeCursor(cursor, { kind: 'thread', teamId, channelId, rootTs, pk }, cursorSecret);
@@ -147,6 +146,7 @@ async function getArchivedThread({
     .filter((message) => isPublicHumanMessage(message, teamId)
       && message.channel_id === channelId
       && message.thread_ts === rootTs);
+  if (!root && !replies.length && !page.LastEvaluatedKey) return null;
   return {
     root,
     replies,
@@ -220,7 +220,7 @@ function isPublicHumanMessage(message, teamId) {
 }
 
 function isPublicChannelId(channelId) {
-  return typeof channelId === 'string' && /^C[A-Z0-9]{2,}$/.test(channelId);
+  return typeof channelId === 'string' && /^[CG][A-Z0-9]{2,}$/.test(channelId);
 }
 
 function isSlackTimestamp(value) {

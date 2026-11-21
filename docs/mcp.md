@@ -33,7 +33,7 @@ All routes require the current Web UI Cognito **ID token** in `Authorization: Be
 - `mode` is `phrase` (default) or `and`. Dates are inclusive ISO 8601 timestamps.
 - `limit` is 1–50; omitted defaults to 20. Only public-channel human messages are returned.
 - The response contains `results` and `next_cursor`. A page may contain fewer results than requested when index candidates fail filters. Continue while `next_cursor` is non-null.
-- Cursors are encrypted with the existing Slack signing secret and bound to the authenticated workspace and query/filter values. Treat them as opaque.
+- Cursors are encrypted with the dedicated `/slack-archiver/ai-cursor-encryption-key` SecureString and bound to the authenticated workspace and query/filter values. Treat them as opaque; rotating this key invalidates existing cursors.
 - Phrase mode matches normalized text as a substring after candidate lookup. Candidate lookup requires the longest query token to exactly match an indexed token, so partial words or punctuation variants can miss; use n-gram indexing if those searches become a requirement. AND mode requires every normalized query token.
 - The current index sorts channel before timestamp. The API scans that token partition with a cursor and sorts each page newest-first; it does not promise global relevance or newest-first ordering across pages.
 
@@ -45,7 +45,7 @@ Returns one non-deleted public-channel message or `404`. The query is always sco
 
 ### `GET /api/ai/threads/{channel_id}/{root_ts}`
 
-Returns the root and up to 50 replies in timestamp order, plus `next_cursor`. The root is repeated on every page. Replies are paginated by querying the channel's timestamp partition after the root; no unbounded table scan or new GSI is required. A page can contain fewer replies if intervening channel messages do not belong to the thread.
+Returns the archived root, when available, and up to 50 replies in timestamp order, plus `next_cursor`. A deleted root is `null`; its replies remain retrievable. The root is repeated on every page when available. Replies are paginated by querying the channel's timestamp partition after the root; no unbounded table scan or new GSI is required. A page can contain fewer replies if intervening channel messages do not belong to the thread.
 
 ### `GET /api/ai/channels`
 
@@ -90,7 +90,7 @@ Cognito resource binding requires Managed Login v2 and the Essentials or Plus fe
 
 The MCP Lambda accepts only access tokens with `token_use=access`, the dedicated MCP `client_id`, a matching `aud` resource, an unexpired `exp`, and the resource-specific `<McpResourceUrl>/read` scope. It then calls Cognito's `/oauth2/userInfo`, requires the returned `sub` to match the token, validates the Slack workspace claim, and applies the optional allowlist. An ID token, Web UI client token, wrong audience, missing Slack claim, or disallowed workspace is rejected. No caller-supplied workspace value is used.
 
-Cognito UserInfo reads the Slack attributes mapped during Slack OIDC login. The app clients need those attributes readable and writable for Cognito's IdP mapping, but must not allow the `aws.cognito.signin.user.admin` OAuth scope; the OAuth access token must not permit self-service changes to the workspace claim. Cursors use the existing Slack signing secret for encryption, so the AI API and MCP Lambda roles need read access to that SSM parameter. Cognito supports PKCE S256, but its discovery metadata may omit `code_challenge_methods_supported`; a client that requires this field to be advertised may reject Cognito even when S256 works. Validate the deployed discovery document and attribute permissions before rollout.
+Cognito UserInfo reads the Slack attributes mapped during Slack OIDC login. The app clients need those attributes readable and writable for Cognito's IdP mapping, but must not allow the `aws.cognito.signin.user.admin` OAuth scope; the OAuth access token must not permit self-service changes to the workspace claim. The AI API and MCP Lambda roles need read access to the dedicated cursor-encryption SSM parameter; they do not need access to the Slack signing secret. Cognito supports PKCE S256, but its discovery metadata may omit `code_challenge_methods_supported`; a client that requires this field to be advertised may reject Cognito even when S256 works. Validate the deployed discovery document and attribute permissions before rollout.
 
 ### Manual OAuth verification
 

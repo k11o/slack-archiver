@@ -56,6 +56,7 @@ test('MCP auth rejects ID tokens, wrong OAuth clients, mismatched identity, and 
   };
 
   assert.equal((await makeAuth({ claims: { ...claims, token_use: 'id' }, userInfo: { sub: 'user-1' } })).statusCode, 401);
+  assert.equal((await makeAuth({ claims: { ...claims, exp: Math.floor(Date.now() / 1000) - 1 }, userInfo: { sub: 'user-1' } })).statusCode, 401);
   assert.equal((await makeAuth({ claims: { ...claims, client_id: 'web-client' }, userInfo: { sub: 'user-1' } })).statusCode, 401);
   assert.equal((await makeAuth({ claims: { ...claims, scope: REQUIRED_SCOPE }, userInfo: { sub: 'user-1' } })).statusCode, 401);
   assert.equal((await makeAuth({ claims, userInfo: { sub: 'other-user', 'https://slack.com/team_id': 'T123' } })).statusCode, 401);
@@ -99,7 +100,9 @@ test('MCP Streamable HTTP endpoint works with the official SDK client', async ()
     },
     getMessage: async ({ teamId, channelId, ts }) => ({ team_id: teamId, channel_id: channelId, ts, text: 'one message' }),
     getThread: async ({ teamId, channelId, rootTs }) => ({
-      root: { team_id: teamId, channel_id: channelId, ts: rootTs, text: 'thread root' },
+      root: rootTs === '1710000003.000000'
+        ? null
+        : { team_id: teamId, channel_id: channelId, ts: rootTs, text: 'thread root' },
       replies: [{ team_id: teamId, channel_id: channelId, ts: '1710000002.000000', thread_ts: rootTs, text: 'reply' }],
       next_cursor: null,
     }),
@@ -144,12 +147,23 @@ test('MCP Streamable HTTP endpoint works with the official SDK client', async ()
       arguments: { channel_id: 'C123', ts: '1710000001.000000' },
     });
     assert.equal(message.structuredContent.message.text, 'one message');
+    const legacyPublicChannelMessage = await client.callTool({
+      name: 'get_message',
+      arguments: { channel_id: 'G123', ts: '1710000001.000000' },
+    });
+    assert.equal(legacyPublicChannelMessage.structuredContent.message.channel_id, 'G123');
     const thread = await client.callTool({
       name: 'get_thread',
       arguments: { channel_id: 'C123', root_ts: '1710000001.000000' },
     });
     assert.equal(thread.structuredContent.root.text, 'thread root');
     assert.equal(thread.structuredContent.replies.length, 1);
+    const deletedRoot = await client.callTool({
+      name: 'get_thread',
+      arguments: { channel_id: 'C123', root_ts: '1710000003.000000' },
+    });
+    assert.equal(deletedRoot.structuredContent.root, null);
+    assert.equal(deletedRoot.structuredContent.replies.length, 1);
     const channels = await client.callTool({ name: 'list_channels', arguments: {} });
     assert.equal(channels.structuredContent.channels[0].channel_name, 'general');
   } finally {
@@ -157,9 +171,9 @@ test('MCP Streamable HTTP endpoint works with the official SDK client', async ()
   }
 });
 
-test('MCP rejects tool responses larger than the Lambda payload limit', async () => {
+test('MCP bounds the serialized Lambda response envelope', async () => {
   process.env.WEB_BASE_URL = 'https://archive.example';
-  const text = 'x'.repeat(3 * 1024 * 1024);
+  const text = '"'.repeat(600 * 1024);
   const handler = createMcpHandler({
     resource: RESOURCE,
     issuer: 'https://cognito-idp.ap-northeast-1.amazonaws.com/pool',
@@ -197,6 +211,11 @@ test('MCP rejects tool responses larger than the Lambda payload limit', async ()
   } finally {
     await client.close();
   }
+});
+
+test('MCP handler rejects missing or non-HTTPS resource configuration', () => {
+  assert.throws(() => createMcpHandler({}), /MCP resource URL is required/);
+  assert.throws(() => createMcpHandler({ resource: 'http://archive.example/mcp' }), /must use HTTPS/);
 });
 
 test('MCP publishes protected-resource metadata and enforces Origin', async () => {

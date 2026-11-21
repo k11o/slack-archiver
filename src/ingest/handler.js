@@ -48,7 +48,7 @@ function createHandler({ getSigningSecret: loadSigningSecret, ddbSend }) {
 
     const teamId = body.team_id || slackEvent.team;
     const channelId = slackEvent.channel;
-    if (!teamId || !/^C[A-Z0-9]+$/.test(channelId || '')) return { statusCode: 200, body: 'ignored' };
+    if (!teamId) return { statusCode: 200, body: 'ignored' };
 
     const incoming = toMessageChange({ body, slackEvent, teamId, channelId });
     if (!incoming) return { statusCode: 200, body: 'ignored' };
@@ -60,7 +60,12 @@ function createHandler({ getSigningSecret: loadSigningSecret, ddbSend }) {
 }
 
 function toMessageChange({ body, slackEvent, teamId, channelId }) {
-  if (slackEvent.channel_type === 'group' || slackEvent.message?.channel_type === 'group') return null;
+  if (slackEvent.channel_type === 'group' || slackEvent.message?.channel_type === 'group'
+    || slackEvent.previous_message?.channel_type === 'group') return null;
+  if (!/^C[A-Z0-9]+$/.test(channelId || '')
+    && !(/^G[A-Z0-9]+$/.test(channelId || '')
+      && [slackEvent.channel_type, slackEvent.message?.channel_type, slackEvent.previous_message?.channel_type]
+        .includes('channel'))) return null;
   if (slackEvent.subtype === 'message_deleted') {
     const ts = slackEvent.deleted_ts;
     const revisionTs = parseSlackTimestamp(slackEvent.ts) || Number(body.event_time) || 0;
@@ -78,7 +83,24 @@ function toMessageChange({ body, slackEvent, teamId, channelId }) {
 
   if (slackEvent.subtype === 'message_changed') {
     const message = slackEvent.message;
-    if (!message || isIgnoredMessageEvent(message)) return null;
+    if (!message) return null;
+    if (message.subtype === 'tombstone') {
+      const revisionTs = parseSlackTimestamp(message.edited?.ts)
+        || Number(body.event_time)
+        || parseSlackTimestamp(slackEvent.ts)
+        || 0;
+      if (!message.ts || !revisionTs) return null;
+      return {
+        kind: 'delete',
+        teamId,
+        channelId,
+        ts: message.ts,
+        revisionTs,
+        eventId: body.event_id || null,
+        message: slackEvent.previous_message || {},
+      };
+    }
+    if (isIgnoredMessageEvent(message)) return null;
     const revisionTs = parseSlackTimestamp(message.edited?.ts)
       || Number(body.event_time)
       || parseSlackTimestamp(slackEvent.ts)
@@ -184,10 +206,10 @@ function buildMessage({ incoming, existing, pk, sk, now }) {
     team_id: incoming.teamId,
     channel_id: incoming.channelId,
     user_id: incoming.message.user || existing?.user_id || null,
-    subtype: deleted ? existing?.subtype || null : incoming.message.subtype || null,
-    bot_id: deleted ? existing?.bot_id || null : incoming.message.bot_id || null,
-    app_id: deleted ? existing?.app_id || null : incoming.message.app_id || null,
-    bot_profile: deleted ? existing?.bot_profile || null : incoming.message.bot_profile || null,
+    subtype: deleted ? 'message_deleted' : incoming.message.subtype || null,
+    bot_id: deleted ? null : incoming.message.bot_id || null,
+    app_id: deleted ? null : incoming.message.app_id || null,
+    bot_profile: deleted ? null : incoming.message.bot_profile || null,
     ts: incoming.ts,
     thread_ts: deleted
       ? existing?.thread_ts || null
@@ -227,17 +249,28 @@ function normalizeLegacyMessage(message) {
   };
 }
 
-async function reconcileSearchIndex({ message, ddbSend }) {
+async function reconcileSearchIndex({
+  message,
+  ddbSend,
+  messagesTable = process.env.MESSAGES_TABLE,
+  indexTable = process.env.SEARCH_INDEX_TABLE,
+}) {
   const { pk, sk } = message;
   const key = { pk, sk };
   for (let attempt = 0; attempt < MAX_INDEX_RETRIES; attempt += 1) {
     const result = await ddbSend(new GetCommand({
-      TableName: process.env.MESSAGES_TABLE,
+      TableName: messagesTable,
       Key: key,
       ConsistentRead: true,
     }));
     const current = result.Item;
-    if (!current) return;
+    if (!current || !current.team_id || !current.channel_id || !current.ts) return 0;
+    const legacyRevision = current.revision_ts === undefined;
+    const revision = Number(current.revision_ts ?? current.ts ?? 0);
+    const revisionCondition = legacyRevision
+      ? 'attribute_not_exists(revision_ts)'
+      : 'revision_ts = :revision';
+    const revisionValues = legacyRevision ? {} : { ':revision': current.revision_ts };
 
     const desired = (current.deleted ? [] : (current.search_tokens || tokenize(current.text || '')))
       .filter(isIndexableToken);
@@ -253,11 +286,11 @@ async function reconcileSearchIndex({ message, ddbSend }) {
         sk: `workspace#${current.team_id}#channel#${current.channel_id}#ts#${current.ts}`,
       };
       if (!desired.includes(token)) {
-        return { Delete: { TableName: process.env.SEARCH_INDEX_TABLE, Key: indexKey } };
+        return { Delete: { TableName: indexTable, Key: indexKey } };
       }
       return {
         Put: {
-          TableName: process.env.SEARCH_INDEX_TABLE,
+          TableName: indexTable,
           Item: {
             ...indexKey,
             token,
@@ -265,7 +298,7 @@ async function reconcileSearchIndex({ message, ddbSend }) {
             message_pk: current.pk,
             message_sk: current.sk,
             ts: current.ts,
-            revision_ts: current.revision_ts,
+            revision_ts: revision,
           },
         },
       };
@@ -277,10 +310,10 @@ async function reconcileSearchIndex({ message, ddbSend }) {
           TransactItems: [
             {
               ConditionCheck: {
-                TableName: process.env.MESSAGES_TABLE,
+                TableName: messagesTable,
                 Key: key,
-                ConditionExpression: 'revision_ts = :revision',
-                ExpressionAttributeValues: { ':revision': current.revision_ts },
+                ConditionExpression: revisionCondition,
+                ...(legacyRevision ? {} : { ExpressionAttributeValues: revisionValues }),
               },
             },
             ...writes.slice(i, i + MAX_TRANSACTION_WRITES),
@@ -288,16 +321,19 @@ async function reconcileSearchIndex({ message, ddbSend }) {
         }));
       }
       await ddbSend(new UpdateCommand({
-        TableName: process.env.MESSAGES_TABLE,
+        TableName: messagesTable,
         Key: key,
-        UpdateExpression: 'SET index_tokens = :tokens',
-        ConditionExpression: 'revision_ts = :revision',
+        UpdateExpression: legacyRevision
+          ? 'SET index_tokens = :tokens, revision_ts = :newRevision'
+          : 'SET index_tokens = :tokens',
+        ConditionExpression: revisionCondition,
         ExpressionAttributeValues: {
           ':tokens': desired,
-          ':revision': current.revision_ts,
-        },
+          ...revisionValues,
+          ...(legacyRevision ? { ':newRevision': revision } : {}),
+        }
       }));
-      return;
+      return desired.length;
     } catch (error) {
       if (error.name !== 'TransactionCanceledException'
         && error.name !== 'ConditionalCheckFailedException') throw error;

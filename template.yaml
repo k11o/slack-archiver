@@ -214,6 +214,7 @@ Resources:
         Variables:
           ALLOWED_SLACK_TEAM_IDS: !Ref AllowedSlackTeamIds
           WEB_BASE_URL: !Ref WebBaseUrl
+          CURSOR_ENCRYPTION_SECRET_PARAM: /slack-archiver/ai-cursor-encryption-key
           COGNITO_ISSUER: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${WebUserPool}'
           COGNITO_CLIENT_ID: !Ref WebUserPoolClient
       Policies:
@@ -224,7 +225,7 @@ Resources:
         - SSMParameterReadPolicy:
             ParameterName: slack-archiver/workspaces/*/slack-bot-token
         - SSMParameterReadPolicy:
-            ParameterName: slack-archiver/slack-signing-secret
+            ParameterName: slack-archiver/ai-cursor-encryption-key
       Events:
         AiSearch:
           Type: HttpApi
@@ -268,6 +269,7 @@ Resources:
           MCP_BASE_URL: !Sub '${WebBaseUrl}/mcp'
           MCP_READ_SCOPE: !Sub '${WebBaseUrl}/mcp/read'
           MCP_ALLOWED_ORIGINS: !Ref McpAllowedOrigins
+          CURSOR_ENCRYPTION_SECRET_PARAM: /slack-archiver/ai-cursor-encryption-key
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref MessagesTable
@@ -276,7 +278,7 @@ Resources:
         - SSMParameterReadPolicy:
             ParameterName: slack-archiver/workspaces/*/slack-bot-token
         - SSMParameterReadPolicy:
-            ParameterName: slack-archiver/slack-signing-secret
+            ParameterName: slack-archiver/ai-cursor-encryption-key
       Events:
         McpPost:
           Type: HttpApi

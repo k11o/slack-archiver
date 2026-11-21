@@ -105,19 +105,21 @@ function createAiApiHandler({
           ddbSend,
         });
         if (!result) return json({ error: 'thread_not_found' }, 404);
-        const messages = [result.root, ...result.replies];
+        const hasRoot = Boolean(result.root);
         const serialized = await serializeMessages({
-          messages,
+          messages: [...(hasRoot ? [result.root] : []), ...result.replies],
           teamId: auth.teamId,
           loadBotToken,
           listChannels,
           loadNames,
           webBaseUrl,
         });
-        if (!serialized[0]) return json({ error: 'thread_not_found' }, 404);
+        if ((hasRoot && !serialized[0]) || (!serialized.length && !result.next_cursor)) {
+          return json({ error: 'thread_not_found' }, 404);
+        }
         return json({
-          root: serialized[0],
-          replies: serialized.slice(1),
+          root: hasRoot ? serialized[0] : null,
+          replies: serialized.slice(hasRoot ? 1 : 0),
           next_cursor: result.next_cursor,
         });
       }
@@ -203,16 +205,12 @@ function parseJsonBody(event) {
 }
 
 function json(body, statusCode = 200) {
-  let serialized = JSON.stringify(body);
-  if (Buffer.byteLength(serialized) > MAX_RESPONSE_BYTES) {
-    statusCode = 413;
-    serialized = JSON.stringify({ error: 'response_too_large' });
+  const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+  let response = { statusCode, headers, body: JSON.stringify(body) };
+  if (Buffer.byteLength(JSON.stringify(response)) > MAX_RESPONSE_BYTES) {
+    response = { statusCode: 413, headers, body: JSON.stringify({ error: 'response_too_large' }) };
   }
-  return {
-    statusCode,
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
-    body: serialized,
-  };
+  return response;
 }
 
 const aiApi = createAiApiHandler({

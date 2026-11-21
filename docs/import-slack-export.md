@@ -7,7 +7,7 @@ The importer writes the same keys used by live Slack Events ingestion:
 - `slack_messages`: `workspace#{team_id}#channel#{channel_id}` / `ts#{message_ts}`
 - `slack_search_index`: `workspace#{team_id}#token#{token}` / `workspace#{team_id}#channel#{channel_id}#ts#{message_ts}`
 
-Duplicate handling is idempotent. The importer reads target message keys and inserts each message with a conditional write, so an existing record or delete tombstone cannot be overwritten even if it appears after the duplicate check. Duplicate messages inside the same export batch are also skipped. Index writes use retryable batches; run the full search-index `reindex` repair from `docs/backfill.md` if an import stops after writing messages. If an import overlaps live edits or deletions, run a full `reindex` after both the import and in-flight event writes finish; batch index writes can otherwise leave stale token entries.
+Duplicate handling is idempotent. The importer reads target message keys and inserts each message with a conditional write, so an existing record or delete tombstone cannot be overwritten even if it appears after the duplicate check. Duplicate messages inside the same export batch are also skipped. Index entries are reconciled from each message's current stored revision using conditional transactions. If an import stops after writing messages, rerunning it repairs the corresponding index entries without replacing live edits or deletions. Use the full `reindex` repair from `docs/backfill.md` only for inconsistencies outside the imported message set.
 
 ## Prerequisites
 
@@ -81,6 +81,6 @@ The script can also import an already extracted export directory with the same `
 
 - Public channel messages are imported from `channel-name/YYYY-MM-DD.json` files listed in `channels.json`; entries marked `is_private` are skipped.
 - Messages with Slack subtypes, bot IDs, app IDs, or bot profiles are skipped to match the current live ingest behavior.
-- Search-index writes are derived from the imported message text with the same tokenizer used by live ingestion.
-- Re-running the command is safe; existing message keys, including tombstones, are skipped. Re-importing does not update a live-edited message.
-- The importer does not modify existing index entries; use the full `reindex` repair if index writes were interrupted.
+- Search-index writes use the current stored message revision and the same tokenizer as live ingestion.
+- Re-running the command is safe; existing message keys, including tombstones, are skipped. Re-importing does not update a live-edited message, and reconciliation preserves concurrent edits/deletes.
+- A rerun repairs partial index work for messages in that export. A full `reindex` is only needed for broader index inconsistencies.

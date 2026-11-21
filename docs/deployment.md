@@ -10,7 +10,8 @@ These values are intentionally not committed to the repository.
 |---|---|---|
 | AWS account ID | AWS console or `aws sts get-caller-identity` | Local deploy notes only |
 | AWS region | Deployment decision | `sam deploy --region` |
-| Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString |
+| Slack signing secret | Slack app settings: Basic Information > App Credentials | SSM Parameter Store SecureString `/slack-archiver/slack-signing-secret` |
+| AI cursor encryption key | Generate a random 32-byte key | SSM Parameter Store SecureString `/slack-archiver/ai-cursor-encryption-key` |
 | Slack app client ID / OIDC client ID | Slack app settings: Basic Information > App Credentials (same value used for Sign in with Slack) | SSM Parameter Store SecureString `/slack-archiver/slack-oidc-client-id`, then SAM parameter `SlackOidcClientId` at deploy time |
 | Slack app client secret / OIDC client secret | Slack app settings: Basic Information > App Credentials (same value used for Sign in with Slack) | SSM Parameter Store SecureString `/slack-archiver/slack-oidc-client-secret`, then SAM parameter `SlackOidcClientSecret` at deploy time |
 | Slack bot token | Slack app settings: OAuth & Permissions > Bot User OAuth Token for each installed workspace | SSM Parameter Store SecureString under `/slack-archiver/workspaces/<TEAM_ID>/slack-bot-token` (written automatically by `InstallFunction` on install) |
@@ -52,6 +53,14 @@ aws ssm put-parameter \
   --name /slack-archiver/slack-signing-secret \
   --type SecureString \
   --value '<SLACK_SIGNING_SECRET>' \
+  --overwrite
+
+aws ssm put-parameter \
+  --profile <AWS_PROFILE> \
+  --region ap-northeast-1 \
+  --name /slack-archiver/ai-cursor-encryption-key \
+  --type SecureString \
+  --value "$(openssl rand -base64 32)" \
   --overwrite
 
 aws ssm put-parameter \
