@@ -237,16 +237,20 @@ async function safeTool(operation) {
       structuredContent: data,
     };
   } catch (error) {
-    const code = error.statusCode && error.statusCode < 500
-      ? error.code
-      : (error.code || 'request_failed');
-    const data = { error: code || 'request_failed' };
+    const data = { error: safeErrorCode(error) };
     return {
       isError: true,
       content: [{ type: 'text', text: JSON.stringify(data) }],
       structuredContent: data,
     };
   }
+}
+
+function safeErrorCode(error) {
+  const candidate = error?.code || error?.Code || (error?.name !== 'Error' ? error?.name : undefined);
+  return typeof candidate === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(candidate)
+    ? candidate
+    : 'request_failed';
 }
 
 function isAllowedOrigin(event, allowedOrigins, expectedHost) {

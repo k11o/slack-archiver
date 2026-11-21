@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
-const { createMcpHandler, isAllowedOrigin } = require('../src/mcp/handler');
+const { createMcpHandler, isAllowedOrigin, safeTool } = require('../src/mcp/handler');
 const { createMcpAuthenticator, REQUIRED_SCOPE } = require('../src/mcp/auth');
 
 const RESOURCE = 'https://archive.example/mcp';
@@ -219,6 +219,31 @@ test('MCP bounds the serialized Lambda response envelope', async () => {
   } finally {
     await client.close();
   }
+});
+
+test('MCP tool failures expose safe error codes without leaking exception messages', async () => {
+  const parameterError = await safeTool(async () => {
+    throw Object.assign(new Error('secret parameter value'), { Code: 'ParameterNotFound' });
+  });
+  const dynamoError = await safeTool(async () => {
+    throw Object.assign(new Error('private request details'), { name: 'ResourceNotFoundException' });
+  });
+  const genericError = await safeTool(async () => {
+    throw new Error('private request details');
+  });
+  const clientError = await safeTool(async () => {
+    throw Object.assign(new Error('invalid query'), { statusCode: 400, code: 'invalid_query' });
+  });
+  const unsafeClientError = await safeTool(async () => {
+    throw Object.assign(new Error('private request details'), { statusCode: 400, code: 'private details' });
+  });
+
+  assert.deepEqual(parameterError.structuredContent, { error: 'ParameterNotFound' });
+  assert.deepEqual(dynamoError.structuredContent, { error: 'ResourceNotFoundException' });
+  assert.deepEqual(genericError.structuredContent, { error: 'request_failed' });
+  assert.deepEqual(clientError.structuredContent, { error: 'invalid_query' });
+  assert.deepEqual(unsafeClientError.structuredContent, { error: 'request_failed' });
+  assert.doesNotMatch(JSON.stringify([parameterError, dynamoError, genericError, unsafeClientError]), /secret parameter value|private request details/);
 });
 
 test('MCP handler rejects missing or non-HTTPS resource configuration', () => {

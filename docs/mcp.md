@@ -74,7 +74,7 @@ It advertises the Cognito User Pool issuer, the `openid profile email` scopes us
 | `get_thread` | `channel_id`, `root_ts`, optional `limit`, `cursor` | Root, one page of replies, and a continuation cursor. |
 | `list_channels` | None | Public channels visible to the archiver bot. |
 
-The MCP tools return both JSON text content and `structuredContent`. Limits match the API (maximum 50 per page). Errors are bounded machine-readable codes; no AWS/SSM values are returned. Archived Slack text is untrusted user-generated content and is described that way to clients. No Slack write tools are exposed.
+The MCP tools return both JSON text content and `structuredContent`. Limits match the API (maximum 50 per page). Errors are bounded machine-readable codes; server failures expose only a sanitized AWS error code or exception name, never messages, stack traces, or AWS/SSM values. Archived Slack text is untrusted user-generated content and is described that way to clients. No Slack write tools are exposed.
 
 ## OAuth and deployment
 
