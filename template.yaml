@@ -24,7 +24,7 @@ Parameters:
     Description: Public API Gateway origin without a trailing slash, for example https://example.execute-api.ap-northeast-1.amazonaws.com.
   McpOAuthCallbackUrls:
     Type: CommaDelimitedList
-    Default: https://claude.ai/api/mcp/auth_callback
+    Default: 'https://claude.ai/api/mcp/auth_callback,http://localhost:27890/callback'
     Description: Exact OAuth callback URLs registered for supported MCP clients.
   McpAllowedOrigins:
     Type: String

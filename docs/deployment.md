@@ -18,7 +18,7 @@ These values are intentionally not committed to the repository.
 | Allowed Slack workspace team IDs | Slack workspace/app metadata | Optional SAM parameter `AllowedSlackTeamIds`, comma-separated |
 | Cognito domain prefix | Deployment decision | SAM parameter `CognitoDomainPrefix` |
 | Web base URL | Existing API endpoint | SAM parameter `WebBaseUrl` |
-| MCP OAuth callback URLs | Exact redirect URLs from MCP client setup | SAM parameter `McpOAuthCallbackUrls` (comma-separated; Claude default is included) |
+| MCP OAuth callback URLs | Exact redirect URLs from MCP client setup | SAM parameter `McpOAuthCallbackUrls`; defaults include Claude and Hermes CLI. Main-branch CI preserves existing stack callbacks and adds the Hermes callback. |
 | MCP browser origins | MCP client browser origin, if sent | SAM parameter `McpAllowedOrigins` (comma-separated) |
 | Slack app request URLs | SAM stack output `ApiEndpoint` | Slack app settings |
 | Slack command name | Slack app settings | `/hi-nick` |
@@ -193,7 +193,7 @@ uv run sam deploy \
     AllowedSlackTeamIds="$ALLOWED_SLACK_TEAM_IDS" \
     CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
     WebBaseUrl="$WEB_BASE_URL" \
-    McpOAuthCallbackUrls="${MCP_OAUTH_CALLBACK_URLS:-https://claude.ai/api/mcp/auth_callback}" \
+    McpOAuthCallbackUrls="${MCP_OAUTH_CALLBACK_URLS:-https://claude.ai/api/mcp/auth_callback,http://localhost:27890/callback}" \
     McpAllowedOrigins="${MCP_ALLOWED_ORIGINS:-https://claude.ai,https://chatgpt.com}"
 ```
 

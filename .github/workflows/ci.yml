@@ -131,6 +131,25 @@ jobs:
             --query 'Parameter.Value' \
             --output text)
 
+          CURRENT_MCP_OAUTH_CALLBACK_URLS=$(aws cloudformation describe-stacks \
+            --region "$AWS_DEFAULT_REGION" \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Parameters[?ParameterKey=='McpOAuthCallbackUrls'].ParameterValue | [0]" \
+            --output text 2>&1) || {
+              if [[ "$CURRENT_MCP_OAUTH_CALLBACK_URLS" == *"Stack with id $STACK_NAME does not exist"* ]]; then
+                CURRENT_MCP_OAUTH_CALLBACK_URLS=""
+              else
+                printf '%s\n' "$CURRENT_MCP_OAUTH_CALLBACK_URLS" >&2
+                exit 1
+              fi
+            }
+          [[ "$CURRENT_MCP_OAUTH_CALLBACK_URLS" == "None" ]] && CURRENT_MCP_OAUTH_CALLBACK_URLS=""
+          MCP_OAUTH_CALLBACK_URLS="${CURRENT_MCP_OAUTH_CALLBACK_URLS:-https://claude.ai/api/mcp/auth_callback,http://localhost:27890/callback}"
+          case ",$MCP_OAUTH_CALLBACK_URLS," in
+            *,http://localhost:27890/callback,*) ;;
+            *) MCP_OAUTH_CALLBACK_URLS="$MCP_OAUTH_CALLBACK_URLS,http://localhost:27890/callback" ;;
+          esac
+
           uv run sam deploy \
             --stack-name "$STACK_NAME" \
             --region "$AWS_DEFAULT_REGION" \
@@ -143,4 +162,5 @@ jobs:
               SlackOidcClientSecret="$SLACK_OIDC_CLIENT_SECRET" \
               AllowedSlackTeamIds="$ALLOWED_SLACK_TEAM_IDS" \
               CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
-              WebBaseUrl="$WEB_BASE_URL"
+              WebBaseUrl="$WEB_BASE_URL" \
+              McpOAuthCallbackUrls="$MCP_OAUTH_CALLBACK_URLS"
